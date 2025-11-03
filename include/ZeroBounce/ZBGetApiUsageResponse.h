@@ -40,6 +40,7 @@ class ZBGetApiUsageResponse {
         int subStatusMailboxQuotaExceeded = 0;
         int subStatusForcibleDisconnect = 0;
         int subStatusFailedSmtpConnection = 0;
+        int subStatusAcceptAll = 0;
         int subStatusMxForward = 0;
         int subStatusAlternate = 0;
         int subStatusBlocked = 0;

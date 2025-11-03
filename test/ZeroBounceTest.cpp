@@ -191,6 +191,7 @@ TEST_F(Tests, testGetApiUsageValid) {
         "sub_status_mailbox_quota_exceeded": 0,
         "sub_status_forcible_disconnect": 0,
         "sub_status_failed_smtp_connection": 0,
+        "sub_status_accept_all": 0,
         "sub_status_mx_forward": 0,
         "sub_status_alternate": 0,
         "sub_status_blocked": 0,
@@ -789,14 +790,11 @@ TEST_F(Tests, testActivityDataValid) {
 TEST_F(Tests, testFindMailStatusInvalid) {
     std::string responseJson = "{\n"
         "    \"email\": \"\",\n"
+        "    \"email_confidence\": \"\",\n"
         "    \"domain\": \"example.com\",\n"
-        "    \"format\": \"unknown\",\n"
-        "    \"status\": \"invalid\",\n"
-        "    \"sub_status\": \"no_dns_entries\",\n"
-        "    \"confidence\": \"undetermined\",\n"
+        "    \"company_name\": \"\",\n"
         "    \"did_you_mean\": \"\",\n"
-        "    \"failure_reason\": \"\",\n"
-        "    \"other_domain_formats\": []\n"
+        "    \"failure_reason\": \"\"\n"
         "}";
 
     cpr::Response reqResponse = mockResponse(responseJson, 200);
@@ -804,7 +802,7 @@ TEST_F(Tests, testFindMailStatusInvalid) {
 
     ZBFindEmailResponse expectedResponse = ZBFindEmailResponse::from_json(json::parse(responseJson));
 
-    ZeroBounceTest::getInstance()->findEmail(
+    ZeroBounceTest::getInstance()->findEmailByDomain(
         "example.com",
         "John",
         "Doe",
@@ -821,10 +819,65 @@ TEST_F(Tests, testFindMailStatusInvalid) {
 TEST_F(Tests, testFindMailStatusValid) {
     std::string responseJson = "{\n"
         "    \"email\": \"john.doe@example.com\",\n"
+        "    \"email_confidence\": \"high\",\n"
         "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
+        "    \"did_you_mean\": \"\",\n"
+        "    \"failure_reason\": \"\"\n"
+        "}";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBFindEmailResponse expectedResponse = ZBFindEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->findEmailByDomain(
+        "example.com",
+        "John",
+        "Doe",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_EQ(response.toString(), expectedResponse.toString());
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testSearchDomainStatusInvalid) {
+    std::string responseJson = "{\n"
+        "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
+        "    \"format\": \"unknown\",\n"
+        "    \"confidence\": \"undetermined\",\n"
+        "    \"did_you_mean\": \"\",\n"
+        "    \"failure_reason\": \"\",\n"
+        "    \"other_domain_formats\": []\n"
+        "}";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBDomainSearchResponse expectedResponse = ZBDomainSearchResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->searchDomainByDomain(
+        "example.com",
+        [&](ZBDomainSearchResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_EQ(response.toString(), expectedResponse.toString());
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testSearchDomainStatusValid) {
+    std::string responseJson = "{\n"
+        "    \"domain\": \"example.com\",\n"
+        "    \"company_name\": \"\",\n"
         "    \"format\": \"first.last\",\n"
-        "    \"status\": \"valid\",\n"
-        "    \"sub_status\": \"\",\n"
         "    \"confidence\": \"high\",\n"
         "    \"did_you_mean\": \"\",\n"
         "    \"failure_reason\": \"\",\n"
@@ -843,13 +896,11 @@ TEST_F(Tests, testFindMailStatusValid) {
     cpr::Response reqResponse = mockResponse(responseJson, 200);
     mockRequestHandler->setResponse(reqResponse);
 
-    ZBFindEmailResponse expectedResponse = ZBFindEmailResponse::from_json(json::parse(responseJson));
+    ZBDomainSearchResponse expectedResponse = ZBDomainSearchResponse::from_json(json::parse(responseJson));
 
-    ZeroBounceTest::getInstance()->findEmail(
+    ZeroBounceTest::getInstance()->searchDomainByDomain(
         "example.com",
-        "John",
-        "Doe",
-        [&](ZBFindEmailResponse response) {
+        [&](ZBDomainSearchResponse response) {
             ASSERT_EQ(response, expectedResponse);
             ASSERT_EQ(response.toString(), expectedResponse.toString());
         },

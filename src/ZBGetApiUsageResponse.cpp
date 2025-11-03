@@ -35,6 +35,7 @@ std::string ZBGetApiUsageResponse::toString()
                 ", subStatusMailboxQuotaExceeded=" << subStatusMailboxQuotaExceeded <<
                 ", subStatusForcibleDisconnect=" << subStatusForcibleDisconnect <<
                 ", subStatusFailedSmtpConnection=" << subStatusFailedSmtpConnection <<
+                ", subStatusAcceptAll=" << subStatusFailedSmtpConnection <<
                 ", subStatusMxForward=" << subStatusMxForward <<
                 ", subStatusAlternate=" << subStatusAlternate <<
                 ", subStatusBlocked=" << subStatusBlocked <<
@@ -78,6 +79,7 @@ ZBGetApiUsageResponse ZBGetApiUsageResponse::from_json(const json& j) {
     r.subStatusMailboxQuotaExceeded = getOrDefault<int>(j, "sub_status_mailbox_quota_exceeded", 0);
     r.subStatusForcibleDisconnect = getOrDefault<int>(j, "sub_status_forcible_disconnect", 0);
     r.subStatusFailedSmtpConnection = getOrDefault<int>(j, "sub_status_failed_smtp_connection", 0);
+    r.subStatusAcceptAll = getOrDefault<int>(j, "sub_status_accept_all", 0);
     r.subStatusMxForward = getOrDefault<int>(j, "sub_status_mx_forward", 0);
     r.subStatusAlternate = getOrDefault<int>(j, "sub_status_alternate", 0);
     r.subStatusBlocked = getOrDefault<int>(j, "sub_status_blocked", 0);
@@ -118,6 +120,7 @@ bool ZBGetApiUsageResponse::operator==(const ZBGetApiUsageResponse& other) const
         subStatusMailboxQuotaExceeded == other.subStatusMailboxQuotaExceeded &&
         subStatusForcibleDisconnect == other.subStatusForcibleDisconnect &&
         subStatusFailedSmtpConnection == other.subStatusFailedSmtpConnection &&
+        subStatusAcceptAll == other.subStatusAcceptAll &&
         subStatusMxForward == other.subStatusMxForward &&
         subStatusAlternate == other.subStatusAlternate &&
         subStatusBlocked == other.subStatusBlocked &&

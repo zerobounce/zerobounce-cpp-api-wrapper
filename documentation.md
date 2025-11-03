@@ -48,9 +48,9 @@ Include the library in your file:
 ###include <ZeroBounce/ZeroBounce.h>
 ```
 
-Initialize the wrapper with your api key:
+Initialize the wrapper with your api key and preferred api:
 ```cpp
-ZeroBounce::getInstance()->initialize("<YOUR_API_KEY>");
+ZeroBounce::getInstance()->initialize("<YOUR_API_KEY>", ZBApiURL::Default);
 ```
 
 #### Examples
@@ -286,12 +286,50 @@ ZeroBounce::getInstance()->scoringDeleteFile(
 );
 ```
 
-* ####### Email finder allows you to identify the correct email format when you provide a name and email domain
-
+* #### Email finder allows you to identify the correct email format when you provide a name and email domain or company name
 ```cpp
-ZeroBounce::getInstance()->findEmail(
-    scoringFileId,
+ZeroBounce::getInstance()->findEmailByDomain(
+    domain,
+    first_name,
+    middle_name,
+    last_name,
     [](ZBFindEmailResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+
+ZeroBounce::getInstance()->findEmailByCompanyName(
+    company_name,
+    first_name,
+    middle_name,
+    last_name,
+    [](ZBFindEmailResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+```
+
+* #### Domain search allows you to identify the email domain when you provide a domain or company name
+```cpp
+ZeroBounce::getInstance()->searchDomainByDomain(
+    domain,
+    [](ZBDomainSearchResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+
+ZeroBounce::getInstance()->searchDomainByCompanyName(
+    company_name,
+    [](ZBDomainSearchResponse response) {
         cout << response.toString() << endl;
     },
     [](ZBErrorResponse errorResponse) {

@@ -27,6 +27,14 @@ void ZeroBounce::initialize(std::string apiKey) {
     this->apiKey = apiKey;
 }
 
+void ZeroBounce::initialize(
+    std::string apiKey,
+    ZBApiURL apiBaseUrl
+) {
+    this->apiKey = apiKey;
+    this->apiBaseUrl = baseURLStringFromZBApiURL(apiBaseUrl);
+}
+
 bool ZeroBounce::invalidApiKey(OnErrorCallback errorCallback) {
     if (apiKey.empty()) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(
@@ -412,6 +420,128 @@ void ZeroBounce::deleteFileInternal(
         successCallback,
         errorCallback
     );
+}
+
+void ZeroBounce::findEmailInternal(
+    std::string domain,
+    std::string company_name,
+    std::string first_name,
+    std::string middle_name,
+    std::string last_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::stringstream urlStream;
+    urlStream << apiBaseUrl << "/guessformat?api_key=" << apiKey;
+    if (domain.size() > 0) {
+        urlStream << "&domain=" << domain;
+    }
+    if (company_name.size() > 0) {
+        urlStream << "&company_name=" << company_name;
+    }
+    if (first_name.size() > 0) {
+        urlStream << "&first_name=" << first_name;
+    }
+    if (middle_name.size() > 0) {
+        urlStream << "&middle_name=" << middle_name;
+    }
+    if (last_name.size() > 0) {
+        urlStream << "&last_name=" << last_name;
+    }
+    sendRequest(urlStream.str(), successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByDomain(
+    std::string domain,
+    std::string first_name,
+    std::string middle_name,
+    std::string last_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(domain, first_name, middle_name, last_name, successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByDomain(
+    std::string domain,
+    std::string first_name,
+    std::string last_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(domain, first_name, "", last_name, successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByDomain(
+    std::string domain,
+    std::string first_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(domain, first_name, "", "", successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByCompanyName(
+    std::string company_name,
+    std::string first_name,
+    std::string middle_name,
+    std::string last_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(company_name, first_name, middle_name, last_name, successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByCompanyName(
+    std::string company_name,
+    std::string first_name,
+    std::string last_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(company_name, first_name, "", last_name, successCallback, errorCallback);
+}
+
+void ZeroBounce::findEmailByCompanyName(
+    std::string company_name,
+    std::string first_name,
+    OnSuccessCallback<ZBFindEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    findEmailInternal(company_name, first_name, "", "", successCallback, errorCallback);
+}
+
+void ZeroBounce::searchDomainInternal(
+    std::string domain,
+    std::string company_name,
+    OnSuccessCallback<ZBDomainSearchResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::stringstream urlStream;
+    urlStream << apiBaseUrl << "/guessformat?api_key=" << apiKey;
+    if (domain.size() > 0) {
+        urlStream << "&domain=" << domain;
+    }
+    if (company_name.size() > 0) {
+        urlStream << "&company_name=" << company_name;
+    }
+    sendRequest(urlStream.str(), successCallback, errorCallback);
+}
+
+void ZeroBounce::searchDomainByDomain(
+    std::string domain,
+    OnSuccessCallback<ZBDomainSearchResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    searchDomainInternal(domain, "", successCallback, errorCallback);
+}
+
+void ZeroBounce::searchDomainByCompanyName(
+    std::string company_name,
+    OnSuccessCallback<ZBDomainSearchResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    searchDomainInternal("", company_name, successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmail(
