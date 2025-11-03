@@ -1,5 +1,6 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/ZBFindEmailResponse.h"
+#include <sstream>
 
 std::string ZBFindEmailResponse::toString() {
     std::stringstream stringStream;

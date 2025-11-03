@@ -459,7 +459,7 @@ void ZeroBounce::findEmailByDomain(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(domain, first_name, middle_name, last_name, successCallback, errorCallback);
+    findEmailInternal(domain, "", first_name, middle_name, last_name, successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByDomain(
@@ -469,7 +469,7 @@ void ZeroBounce::findEmailByDomain(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(domain, first_name, "", last_name, successCallback, errorCallback);
+    findEmailInternal(domain, "", first_name, "", last_name, successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByDomain(
@@ -478,7 +478,7 @@ void ZeroBounce::findEmailByDomain(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(domain, first_name, "", "", successCallback, errorCallback);
+    findEmailInternal(domain, "", first_name, "", "", successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByCompanyName(
@@ -489,7 +489,7 @@ void ZeroBounce::findEmailByCompanyName(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(company_name, first_name, middle_name, last_name, successCallback, errorCallback);
+    findEmailInternal("", company_name, first_name, middle_name, last_name, successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByCompanyName(
@@ -499,7 +499,7 @@ void ZeroBounce::findEmailByCompanyName(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(company_name, first_name, "", last_name, successCallback, errorCallback);
+    findEmailInternal("", company_name, first_name, "", last_name, successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByCompanyName(
@@ -508,7 +508,7 @@ void ZeroBounce::findEmailByCompanyName(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    findEmailInternal(company_name, first_name, "", "", successCallback, errorCallback);
+    findEmailInternal("", company_name, first_name, "", "", successCallback, errorCallback);
 }
 
 void ZeroBounce::searchDomainInternal(

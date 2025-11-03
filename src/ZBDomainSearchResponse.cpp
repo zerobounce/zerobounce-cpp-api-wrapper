@@ -1,5 +1,6 @@
 #include "ZeroBounce/utils.h"
 #include "ZeroBounce/ZBDomainSearchResponse.h"
+#include <sstream>
 
 std::string ZBDomainFormat::toString() {
     std::stringstream stringStream;
@@ -65,7 +66,7 @@ ZBDomainSearchResponse ZBDomainSearchResponse::from_json(const json& json_obj) {
 
 bool ZBDomainSearchResponse::operator==(const ZBDomainSearchResponse& other) const {
     bool fieldsAreEqual = this->domain == other.domain
-        && this->companyName = other.companyName
+        && this->companyName == other.companyName
         && this->format == other.format
         && this->confidence == other.confidence
         && this->didYouMean == other.didYouMean

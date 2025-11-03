@@ -1,5 +1,5 @@
 #include <exception>
-
+#include <sstream>
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZBErrorResponse.h"
