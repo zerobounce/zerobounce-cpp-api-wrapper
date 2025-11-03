@@ -584,6 +584,7 @@ class ZeroBounce {
          * @param success_callback  success callback
          * @param error_callback    error callback
          */
+        [[deprecated("Use findEmail... methods for Email Finder API, or searchDomain... methods for Domain Search API")]]
         void findEmail(
             std::string domain,
             std::string first_name,
@@ -603,6 +604,7 @@ class ZeroBounce {
          * @param success_callback  success callback
          * @param error_callback    error callback
          */
+        [[deprecated("Use findEmail... methods for Email Finder API, or searchDomain... methods for Domain Search API")]]
         void findEmail(
             std::string domain,
             std::string first_name,
