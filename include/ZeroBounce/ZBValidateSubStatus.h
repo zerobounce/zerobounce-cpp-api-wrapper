@@ -30,7 +30,8 @@ enum ZBValidateSubStatus {
     AliasAddress,
     RoleBasedCatchAll,
     Disposable,
-    Toxic
+    Toxic,
+    AcceptAll
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(
@@ -59,7 +60,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {ZBValidateSubStatus::AliasAddress, "alias_address"},
         {ZBValidateSubStatus::RoleBasedCatchAll, "role_based_catch_all"},
         {ZBValidateSubStatus::Disposable, "disposable"},
-        {ZBValidateSubStatus::Toxic, "toxic"}
+        {ZBValidateSubStatus::Toxic, "toxic"},
+        {ZBValidateSubStatus::AcceptAll, "accept_all"}
     }
 )
 

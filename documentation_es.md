@@ -48,9 +48,9 @@ Incluye la biblioteca en tu archivo:
 ###include <ZeroBounce/ZeroBounce.h>
 ```
 
-Inicializa el envoltorio con tu clave de API:
+Inicializa el envoltorio con tu clave de API y tu API preferida:
 ```cpp
-ZeroBounce::getInstance()->initialize("<TU_CLAVE_DE_API>");
+ZeroBounce::getInstance()->initialize("<TU_CLAVE_DE_API>", ZBApiURL::Default);
 ```
 
 #### Ejemplos
@@ -292,13 +292,50 @@ ZeroBounce::getInstance()->scoringDeleteFile(
 );
 ```
 
-
-* ####### Email finder allows you to identify the correct email format when you provide a name and email domain
-
+* #### El buscador de correos electrónicos te permite identificar el formato correcto de correo electrónico cuando proporcionas un nombre y un dominio de correo electrónico o el nombre de una empresa.
 ```cpp
-ZeroBounce::getInstance()->findEmail(
-    scoringFileId,
+ZeroBounce::getInstance()->findEmailByDomain(
+    domain,
+    first_name,
+    middle_name,
+    last_name,
     [](ZBFindEmailResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+
+ZeroBounce::getInstance()->findEmailByCompanyName(
+    company_name,
+    first_name,
+    middle_name,
+    last_name,
+    [](ZBFindEmailResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+```
+
+* #### La búsqueda de dominio le permite identificar el dominio de correo electrónico cuando proporciona un dominio o nombre de empresa.
+```cpp
+ZeroBounce::getInstance()->searchDomainByDomain(
+    domain,
+    [](ZBDomainSearchResponse response) {
+        cout << response.toString() << endl;
+    },
+    [](ZBErrorResponse errorResponse) {
+        cout << errorResponse.toString() << endl;
+    }
+);
+
+ZeroBounce::getInstance()->searchDomainByCompanyName(
+    company_name,
+    [](ZBDomainSearchResponse response) {
         cout << response.toString() << endl;
     },
     [](ZBErrorResponse errorResponse) {
