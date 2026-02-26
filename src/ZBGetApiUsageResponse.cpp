@@ -35,11 +35,13 @@ std::string ZBGetApiUsageResponse::toString()
                 ", subStatusMailboxQuotaExceeded=" << subStatusMailboxQuotaExceeded <<
                 ", subStatusForcibleDisconnect=" << subStatusForcibleDisconnect <<
                 ", subStatusFailedSmtpConnection=" << subStatusFailedSmtpConnection <<
-                ", subStatusAcceptAll=" << subStatusFailedSmtpConnection <<
+                ", subStatusAcceptAll=" << subStatusAcceptAll <<
                 ", subStatusMxForward=" << subStatusMxForward <<
                 ", subStatusAlternate=" << subStatusAlternate <<
                 ", subStatusBlocked=" << subStatusBlocked <<
                 ", subStatusAllowed=" << subStatusAllowed <<
+                ", subStatusGold=" << subStatusGold <<
+                ", subStatusRoleBasedAcceptAll=" << subStatusRoleBasedAcceptAll <<
                 ", startDate='" << startDate << '\'' <<
                 ", endDate='" << endDate << '\'' <<
                 ", error='" << error << '\'' <<
@@ -84,6 +86,8 @@ ZBGetApiUsageResponse ZBGetApiUsageResponse::from_json(const json& j) {
     r.subStatusAlternate = getOrDefault<int>(j, "sub_status_alternate", 0);
     r.subStatusBlocked = getOrDefault<int>(j, "sub_status_blocked", 0);
     r.subStatusAllowed = getOrDefault<int>(j, "sub_status_allowed", 0);
+    r.subStatusGold = getOrDefault<int>(j, "sub_status_gold", 0);
+    r.subStatusRoleBasedAcceptAll = getOrDefault<int>(j, "sub_status_role_based_accept_all", 0);
     r.startDate = getOrDefault<std::string>(j, "start_date", "");
     r.endDate = getOrDefault<std::string>(j, "end_date", "");
     r.error = getOrDefault<std::string>(j, "error", "");
@@ -125,6 +129,8 @@ bool ZBGetApiUsageResponse::operator==(const ZBGetApiUsageResponse& other) const
         subStatusAlternate == other.subStatusAlternate &&
         subStatusBlocked == other.subStatusBlocked &&
         subStatusAllowed == other.subStatusAllowed &&
+        subStatusGold == other.subStatusGold &&
+        subStatusRoleBasedAcceptAll == other.subStatusRoleBasedAcceptAll &&
         startDate == other.startDate &&
         endDate == other.endDate &&
         error == other.error;

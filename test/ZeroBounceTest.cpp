@@ -196,6 +196,8 @@ TEST_F(Tests, testGetApiUsageValid) {
         "sub_status_alternate": 0,
         "sub_status_blocked": 0,
         "sub_status_allowed": 0,
+        "sub_status_gold": 0,
+        "sub_status_role_based_accept_all": 0,
         "start_date": "1/1/2018",
         "end_date": "12/12/2019"
     })";

@@ -45,6 +45,8 @@ class ZBGetApiUsageResponse {
         int subStatusAlternate = 0;
         int subStatusBlocked = 0;
         int subStatusAllowed = 0;
+        int subStatusGold = 0;
+        int subStatusRoleBasedAcceptAll = 0;
         std::string startDate;
         std::string endDate;
         std::string error;

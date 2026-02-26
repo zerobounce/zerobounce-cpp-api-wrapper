@@ -38,3 +38,6 @@ build
 downloads
 test/downloads
 main.cpp
+
+.DS_Store
+.env
