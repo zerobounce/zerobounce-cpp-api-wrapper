@@ -358,3 +358,7 @@ You should see an output like this
 [==========] 26 tests from 1 test suite ran. (7 ms total)
 [  PASSED  ] 26 tests.
 ```
+
+## Publish
+
+Distribution is via [vcpkg](https://vcpkg.io) (PR to microsoft/vcpkg). See the [sdk-docs (vcpkg)](../sdk-docs/vcpkg/) guide in the SDKs repo for port files and submission steps.
