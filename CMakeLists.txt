@@ -30,6 +30,16 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(cpr nlohmann_json googletest)
 
+# Fix CodeQL cpp/incorrectly-checked-scanf: curl 7.80.0 (cpr dep) checks sscanf
+# return only against truthiness; must check for expected conversions (1).
+set(CURL_PARSEDATE "${CMAKE_BINARY_DIR}/_deps/curl-src/lib/parsedate.c")
+if(EXISTS "${CURL_PARSEDATE}")
+  file(READ "${CURL_PARSEDATE}" PARSEDATE_C)
+  string(REPLACE "if(sscanf(date, " "if(1 == sscanf(date, " PARSEDATE_C "${PARSEDATE_C}")
+  file(WRITE "${CURL_PARSEDATE}" "${PARSEDATE_C}")
+  message(STATUS "Patched curl parsedate.c: sscanf return value check")
+endif()
+
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC include)
