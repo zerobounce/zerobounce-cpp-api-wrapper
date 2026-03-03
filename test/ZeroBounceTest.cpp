@@ -3,8 +3,11 @@
 
 #include <cpr/cpr.h>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZeroBounce.h"
+
+using json = nlohmann::json;
 
 /**
  * Class used to handle http requests made with libcpr during tests.
@@ -41,8 +44,8 @@ class ZeroBounceTest : public ZeroBounce {
         static ZeroBounceTest* instance;
 
     public:
-        void setRequestHandler(BaseRequestHandler* requestHandler) {
-            this->requestHandler = requestHandler;
+        void setRequestHandler(BaseRequestHandler* handler) {
+            this->requestHandler = handler;
         }
 
         static ZeroBounceTest* getInstance() {
@@ -94,6 +97,19 @@ class Tests : public ::testing::Test {
             delete mockRequestHandler;
         }
 };
+
+// --- Initialization and API key ---
+
+TEST_F(Tests, testUninitializedApiKeyCallsErrorCallback) {
+    ZeroBounceTest::getInstance()->initialize("");
+    ZeroBounceTest::getInstance()->getCredits(
+        [&](ZBCreditsResponse) { FAIL() << "Success callback should not be called"; },
+        [&](ZBErrorResponse errorResponse) {
+            ASSERT_FALSE(errorResponse.errors.empty());
+            ASSERT_TRUE(errorResponse.toString().find("initialize") != std::string::npos);
+        }
+    );
+}
 
 TEST_F(Tests, testGetCreditsInvalid) {
     std::string responseJson = "{\"Credits\":\"-1\"}";
@@ -289,6 +305,45 @@ TEST_F(Tests, testSingleEmailValidateValid) {
     );
 }
 
+TEST_F(Tests, testSingleEmailValidateWithEmptyIpAddress) {
+    std::string responseJson = R"({
+        "address": "valid@example.com",
+        "status": "valid",
+        "sub_status": "",
+        "free_email": false,
+        "did_you_mean": null,
+        "account": null,
+        "domain": null,
+        "domain_age_days": "9692",
+        "smtp_provider": "example",
+        "mx_found": "true",
+        "mx_record": "mx.example.com",
+        "firstname": "zero",
+        "lastname": "bounce",
+        "gender": "male",
+        "country": null,
+        "region": null,
+        "city": null,
+        "zipcode": null,
+        "processed_at": "2023-04-05 13:29:47.553"
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com",
+        "",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.address, "valid@example.com");
+            ASSERT_EQ(response.status, ZBValidateStatus::Valid);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testBatchEmailValidateInvalid) {
     std::string responseJson = "{\"Message\":\"Missing parameter: email_address.\"}";
 
@@ -431,6 +486,41 @@ TEST_F(Tests, testSendFileValid) {
     );
 }
 
+TEST_F(Tests, testSendFileValidWithOptions) {
+    std::string responseJson = R"({
+        "success":true,
+        "message":"File Accepted",
+        "file_name":"email_file.csv",
+        "file_id":"bbbbbbbb-zzzz-xxxx-yyyy-5003727fffff"
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 201);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBSendFileResponse expectedResponse = ZBSendFileResponse::from_json(json::parse(responseJson));
+
+    SendFileOptions options;
+    options.returnUrl = "https://example.com/callback";
+    options.firstNameColumn = 2;
+    options.lastNameColumn = 3;
+    options.genderColumn = 4;
+    options.ipAddressColumn = 5;
+    options.hasHeaderRow = true;
+    options.removeDuplicate = false;
+
+    ZeroBounceTest::getInstance()->sendFile(
+        "../email_file.csv",
+        1,
+        options,
+        [&](ZBSendFileResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testFileStatusInvalid) {
     std::string responseJson = "{\"success\":\"False\",\"message\":[\"api_key is invalid\"]}";
 
@@ -519,6 +609,24 @@ TEST_F(Tests, testGetFileValid) {
         },
         [&](ZBErrorResponse errorResponse) {
             FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testGetFileInvalidWhenPathIsDirectory) {
+    std::string csvContent = "email,name\n";
+    cpr::Response reqResponse = mockResponse(csvContent, 200, "application/octet-stream");
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBErrorResponse expectedResponse = ZBErrorResponse::parseError("Invalid file path");
+
+    ZeroBounceTest::getInstance()->getFile(
+        "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+        ".",
+        [&](ZBGetFileResponse) { FAIL() << "Success callback should not be called for directory path"; },
+        [&](ZBErrorResponse errorResponse) {
+            ASSERT_EQ(errorResponse.errors.size(), 1u);
+            ASSERT_EQ(errorResponse.errors[0], "Invalid file path");
         }
     );
 }
@@ -908,6 +1016,243 @@ TEST_F(Tests, testSearchDomainStatusValid) {
         },
         [&](ZBErrorResponse errorResponse) {
             FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+// --- findEmailByDomain overloads ---
+
+TEST_F(Tests, testFindEmailByDomainFirstNameOnly) {
+    std::string responseJson = R"({
+        "email": "jane@example.com",
+        "email_confidence": "high",
+        "domain": "example.com",
+        "company_name": "",
+        "did_you_mean": "",
+        "failure_reason": ""
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBFindEmailResponse expectedResponse = ZBFindEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->findEmailByDomain(
+        "example.com",
+        "Jane",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testFindEmailByDomainWithMiddleName) {
+    std::string responseJson = R"({
+        "email": "john.middle.doe@example.com",
+        "email_confidence": "high",
+        "domain": "example.com",
+        "company_name": "",
+        "did_you_mean": "",
+        "failure_reason": ""
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->findEmailByDomain(
+        "example.com",
+        "John",
+        "Middle",
+        "Doe",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response.email, "john.middle.doe@example.com");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+// --- findEmailByCompanyName ---
+
+TEST_F(Tests, testFindEmailByCompanyNameFull) {
+    std::string responseJson = R"({
+        "email": "john.doe@acme.com",
+        "email_confidence": "high",
+        "domain": "acme.com",
+        "company_name": "Acme Inc",
+        "did_you_mean": "",
+        "failure_reason": ""
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->findEmailByCompanyName(
+        "Acme Inc",
+        "John",
+        "Middle",
+        "Doe",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response.email, "john.doe@acme.com");
+            ASSERT_EQ(response.companyName, "Acme Inc");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testFindEmailByCompanyNameFirstLast) {
+    std::string responseJson = R"({
+        "email": "jane@acme.com",
+        "email_confidence": "medium",
+        "domain": "acme.com",
+        "company_name": "Acme Inc",
+        "did_you_mean": "",
+        "failure_reason": ""
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->findEmailByCompanyName(
+        "Acme Inc",
+        "Jane",
+        "Doe",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response.email, "jane@acme.com");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testFindEmailByCompanyNameFirstOnly) {
+    std::string responseJson = R"({
+        "email": "bob@acme.com",
+        "email_confidence": "low",
+        "domain": "acme.com",
+        "company_name": "Acme Inc",
+        "did_you_mean": "",
+        "failure_reason": ""
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->findEmailByCompanyName(
+        "Acme Inc",
+        "Bob",
+        [&](ZBFindEmailResponse response) {
+            ASSERT_EQ(response.email, "bob@acme.com");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+// --- searchDomainByCompanyName ---
+
+TEST_F(Tests, testSearchDomainByCompanyNameValid) {
+    std::string responseJson = R"({
+        "domain": "acme.com",
+        "company_name": "Acme Inc",
+        "format": "first.last",
+        "confidence": "high",
+        "did_you_mean": "",
+        "failure_reason": "",
+        "other_domain_formats": []
+    })";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBDomainSearchResponse expectedResponse = ZBDomainSearchResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->searchDomainByCompanyName(
+        "Acme Inc",
+        [&](ZBDomainSearchResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+// --- ZBErrorResponse::parseError ---
+
+TEST_F(Tests, testZBErrorResponseParseErrorEmptyString) {
+    ZBErrorResponse response = ZBErrorResponse::parseError("");
+    ASSERT_TRUE(response.errors.empty());
+}
+
+TEST_F(Tests, testZBErrorResponseParseErrorInvalidJsonFallsBackToRawMessage) {
+    std::string rawMessage = "Connection refused";
+    ZBErrorResponse response = ZBErrorResponse::parseError(rawMessage);
+    ASSERT_EQ(response.errors.size(), 1u);
+    ASSERT_EQ(response.errors[0], rawMessage);
+}
+
+TEST_F(Tests, testZBErrorResponseParseErrorMessageArray) {
+    std::string jsonStr = R"({"success": false, "message": ["Error one", "Error two"]})";
+    ZBErrorResponse response = ZBErrorResponse::parseError(jsonStr);
+    ASSERT_EQ(response.errors.size(), 2u);
+    ASSERT_EQ(response.errors[0], "Error one");
+    ASSERT_EQ(response.errors[1], "Error two");
+}
+
+TEST_F(Tests, testZBErrorResponseParseErrorErrorKey) {
+    std::string jsonStr = R"({"error": "Invalid API key"})";
+    ZBErrorResponse response = ZBErrorResponse::parseError(jsonStr);
+    ASSERT_EQ(response.errors.size(), 1u);
+    ASSERT_EQ(response.errors[0], "Invalid API key");
+}
+
+TEST_F(Tests, testZBErrorResponseOperatorEquals) {
+    ZBErrorResponse a(false, {"err1"});
+    ZBErrorResponse b(false, {"err1"});
+    ZBErrorResponse c(false, {"err2"});
+    ASSERT_EQ(a, b);
+    ASSERT_NE(a, c);
+}
+
+// --- initialize with ZBApiURL ---
+
+TEST_F(Tests, testInitializeWithApiUrlThenRequestSucceeds) {
+    ZeroBounceTest::getInstance()->initialize(API_KEY, ZBApiURL::EU);
+    ZeroBounceTest::getInstance()->setRequestHandler(mockRequestHandler);
+
+    std::string responseJson = "{\"Credits\":\"50\"}";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->getCredits(
+        [&](ZBCreditsResponse response) {
+            ASSERT_EQ(response.credits, 50);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+// --- Invalid JSON / exception path ---
+
+TEST_F(Tests, testGetCreditsValidResponseButInvalidJsonCallsErrorCallback) {
+    cpr::Response reqResponse = mockResponse("not valid json", 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->getCredits(
+        [&](ZBCreditsResponse) { FAIL() << "Success should not be called for invalid JSON"; },
+        [&](ZBErrorResponse errorResponse) {
+            ASSERT_FALSE(errorResponse.errors.empty());
         }
     );
 }

@@ -2,6 +2,7 @@
 #define ZEROBOUNCE_H
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,8 @@ struct SendFileOptions {
  */
 class BaseRequestHandler {
     public:
+        virtual ~BaseRequestHandler() = default;
+
         template <typename... Ts>
         cpr::Response Get(Ts&&... ts) {
             return doGet(std::forward<Ts>(ts)...);
@@ -85,9 +88,9 @@ class RequestHandler : public BaseRequestHandler {
  */
 class ZeroBounce {
     protected:
-        BaseRequestHandler* requestHandler = new RequestHandler();
+        std::unique_ptr<BaseRequestHandler> defaultRequestHandler;
+        BaseRequestHandler* requestHandler = nullptr;
     private:
-        static ZeroBounce* instance;
         std::string apiKey;
         std::string apiBaseUrl = "https://api.zerobounce.net/v2";
         const std::string bulkApiBaseUrl = "https://bulkapi.zerobounce.net/v2";

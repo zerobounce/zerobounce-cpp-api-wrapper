@@ -12,15 +12,13 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 ZeroBounce::ZeroBounce() {
+    defaultRequestHandler = std::make_unique<RequestHandler>();
+    requestHandler = defaultRequestHandler.get();
 }
 
-ZeroBounce* ZeroBounce::instance = nullptr;
-
 ZeroBounce* ZeroBounce::getInstance() {
-    if (ZeroBounce::instance == nullptr) {
-        ZeroBounce::instance = new ZeroBounce();
-    }
-    return ZeroBounce::instance;
+    static ZeroBounce instance;
+    return &instance;
 }
 
 void ZeroBounce::initialize(std::string apiKey) {
@@ -145,7 +143,7 @@ void ZeroBounce::validateBatch(
                 successCallback(response);
             }
         }
-    } catch (std::exception e) {
+    } catch (const std::exception& e) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
         errorCallback(errorResponse);
     }
@@ -260,7 +258,7 @@ void ZeroBounce::sendRequest(
                 successCallback(response);
             }
         }
-    } catch (std::exception e) {
+    } catch (const std::exception& e) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
         errorCallback(errorResponse);
     }
@@ -326,7 +324,7 @@ void ZeroBounce::sendFileInternal(
                 successCallback(response);
             }
         }
-    } catch (std::exception e) {
+    } catch (const std::exception& e) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
         errorCallback(errorResponse);
     }
@@ -400,7 +398,7 @@ void ZeroBounce::getFileInternal(
                 }
             }
         }
-    } catch (std::exception e) {
+    } catch (const std::exception& e) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
         errorCallback(errorResponse);
     }

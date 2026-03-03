@@ -64,7 +64,7 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
 
         errors.insert(errors.end(), otherMessages.begin(), otherMessages.end());
 
-    } catch (std::exception e) {
+    } catch (const std::exception& e) {
         errors.push_back(error);
     }
 
@@ -74,5 +74,5 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
 
 bool ZBErrorResponse::operator==(const ZBErrorResponse& other) const {
     return success == other.success &&
-        errors == errors;
+        errors == other.errors;
 }
