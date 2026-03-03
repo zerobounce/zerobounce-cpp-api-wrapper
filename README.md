@@ -361,4 +361,4 @@ You should see an output like this
 
 ## Publish
 
-Distribution is via [vcpkg](https://vcpkg.io) (PR to microsoft/vcpkg). See the [sdk-docs (vcpkg)](../sdk-docs/vcpkg/) guide in the SDKs repo for port files and submission steps.
+No package registry. Use the C++ API from this repo (clone or add as submodule).
