@@ -1,3 +1,4 @@
+#include <cctype>
 #include <ctime>
 #include <exception>
 #include <filesystem>
@@ -31,6 +32,92 @@ void ZeroBounce::initialize(
 ) {
     this->apiKey = apiKey;
     this->apiBaseUrl = baseURLStringFromZBApiURL(apiBaseUrl);
+}
+
+static bool contentTypeIncludesApplicationJson(const std::string& contentType) {
+    std::string lower;
+    lower.reserve(contentType.size());
+    for (unsigned char c : contentType) {
+        lower += static_cast<char>(std::tolower(c));
+    }
+    return lower.find("application/json") != std::string::npos;
+}
+
+static bool shouldTreatGetFileBodyAsError(const std::string& body, const std::string& contentType) {
+    if (contentTypeIncludesApplicationJson(contentType)) {
+        return true;
+    }
+    return ZeroBounce::getFileJsonIndicatesError(body);
+}
+
+bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
+    std::size_t i = 0;
+    while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) {
+        i++;
+    }
+    if (i >= body.size() || body[i] != '{') {
+        return false;
+    }
+    try {
+        json o = json::parse(body);
+        if (!o.is_object()) {
+            return false;
+        }
+        if (o.contains("success")) {
+            const auto& s = o["success"];
+            if (s == false) {
+                return true;
+            }
+            if (s.is_string()) {
+                std::string sv = s.get<std::string>();
+                if (sv == "false" || sv == "False") {
+                    return true;
+                }
+            }
+        }
+        for (const char* k : {"message", "error", "error_message"}) {
+            if (!o.contains(k)) {
+                continue;
+            }
+            const auto& v = o[k];
+            if (v.is_string() && !v.get<std::string>().empty()) {
+                return true;
+            }
+            if (v.is_array() && !v.empty()) {
+                return true;
+            }
+        }
+        return o.contains("success");
+    } catch (...) {
+        return false;
+    }
+}
+
+std::string ZeroBounce::formatGetFileErrorMessage(const std::string& body) {
+    try {
+        json o = json::parse(body);
+        if (!o.is_object()) {
+            return body.empty() ? "Invalid getfile response" : body;
+        }
+        for (const char* k : {"message", "error", "error_message"}) {
+            if (!o.contains(k)) {
+                continue;
+            }
+            const auto& v = o[k];
+            if (v.is_string()) {
+                std::string t = v.get<std::string>();
+                if (!t.empty()) {
+                    return t;
+                }
+            }
+            if (v.is_array() && !v.empty() && v[0].is_string()) {
+                return v[0].get<std::string>();
+            }
+        }
+        return body;
+    } catch (...) {
+        return body.empty() ? "Invalid getfile response" : body;
+    }
 }
 
 bool ZeroBounce::invalidApiKey(OnErrorCallback errorCallback) {
@@ -173,7 +260,17 @@ void ZeroBounce::getFile(
     OnSuccessCallback<ZBGetFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    getFileInternal(false, fileId, localDownloadPath, successCallback, errorCallback);
+    getFileInternal(false, fileId, localDownloadPath, nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::getFileWithOptions(
+    std::string fileId,
+    std::string localDownloadPath,
+    const GetFileOptions& options,
+    OnSuccessCallback<ZBGetFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    getFileInternal(false, fileId, localDownloadPath, &options, successCallback, errorCallback);
 }
 
 void ZeroBounce::deleteFile(
@@ -208,7 +305,17 @@ void ZeroBounce::scoringGetFile(
     OnSuccessCallback<ZBGetFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    getFileInternal(true, fileId, localDownloadPath, successCallback, errorCallback);
+    getFileInternal(true, fileId, localDownloadPath, nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::scoringGetFileWithOptions(
+    std::string fileId,
+    std::string localDownloadPath,
+    const GetFileOptions& options,
+    OnSuccessCallback<ZBGetFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    getFileInternal(true, fileId, localDownloadPath, &options, successCallback, errorCallback);
 }
 
 void ZeroBounce::scoringDeleteFile(
@@ -305,6 +412,10 @@ void ZeroBounce::sendFileInternal(
         multipart.parts.emplace_back(cpr::Part{"has_header_row", options.hasHeaderRow});
         multipart.parts.emplace_back(cpr::Part{"remove_duplicate", options.removeDuplicate});
 
+        if (!scoring && options.allowPhase2IsSet) {
+            multipart.parts.emplace_back(cpr::Part{"allow_phase_2", options.allowPhase2});
+        }
+
         cpr::Response reqResponse = requestHandler->Post(
             cpr::Url{urlPath},
             cpr::Header{{"Content-Type", "multipart/form-data"}},
@@ -350,16 +461,27 @@ void ZeroBounce::getFileInternal(
     bool scoring,
     std::string fileId,
     std::string localDownloadPath,
+    const GetFileOptions* getFileOptionsPtr,
     OnSuccessCallback<ZBGetFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
     if (invalidApiKey(errorCallback)) return;
 
-    try {
-        std::string urlPath = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl)
-            + "/getfile?api_key=" + apiKey + "&file_id=" + fileId;
+    GetFileOptions emptyOptions;
+    const GetFileOptions& options = getFileOptionsPtr ? *getFileOptionsPtr : emptyOptions;
 
-        cpr::Response reqResponse = requestHandler->Get(cpr::Url{urlPath});
+    try {
+        const std::string base = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/getfile";
+        cpr::Parameters params;
+        params.Add({{"api_key", apiKey}, {"file_id", fileId}});
+        if (!options.downloadType.empty()) {
+            params.Add({{"download_type", options.downloadType}});
+        }
+        if (!scoring && options.activityData.has_value()) {
+            params.Add({{"activity_data", *options.activityData ? std::string("true") : std::string("false")}});
+        }
+
+        cpr::Response reqResponse = requestHandler->getWithParameters(cpr::Url{base}, params);
 
         std::string contentType = reqResponse.header["Content-Type"];
 
@@ -367,12 +489,19 @@ void ZeroBounce::getFileInternal(
 
         if (reqResponse.status_code > 299) {
             if (errorCallback) {
-                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
-                errorCallback(errorResponse);
+                std::string errPayload = rsp;
+                if (!rsp.empty() && rsp[0] == '{') {
+                    errPayload = formatGetFileErrorMessage(rsp);
+                }
+                errorCallback(ZBErrorResponse::parseError(errPayload));
             }
         } else {
             if (successCallback) {
-                if (contentType != "application/json") {
+                if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
+                    if (errorCallback) {
+                        errorCallback(ZBErrorResponse::parseError(formatGetFileErrorMessage(rsp)));
+                    }
+                } else {
                     fs::path filePath(localDownloadPath);
 
                     if (fs::is_directory(filePath)) {
@@ -385,15 +514,12 @@ void ZeroBounce::getFileInternal(
 
                     std::ofstream fileStream(filePath, std::ofstream::out | std::ofstream::binary);
 
-                    fileStream.write(rsp.c_str(), rsp.size());
+                    fileStream.write(rsp.c_str(), static_cast<std::streamsize>(rsp.size()));
                     fileStream.close();
 
                     ZBGetFileResponse response;
                     response.success = true;
                     response.localFilePath = localDownloadPath;
-                    successCallback(response);
-                } else {
-                    ZBGetFileResponse response = ZBGetFileResponse::from_json(json::parse(rsp));
                     successCallback(response);
                 }
             }

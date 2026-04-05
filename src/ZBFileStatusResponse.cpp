@@ -14,6 +14,7 @@ std::string ZBFileStatusResponse::toString()
                 ", uploadDate='" << uploadDate << '\'' <<
                 ", fileStatus='" << fileStatus << '\'' <<
                 ", completePercentage='" << completePercentage << '\'' <<
+                ", filePhase2Status='" << filePhase2Status << '\'' <<
                 ", returnUrl='" << returnUrl << '\'' <<
                 ", errorReason='" << errorReason << '\'' <<
                 '}';
@@ -32,6 +33,7 @@ ZBFileStatusResponse ZBFileStatusResponse::from_json(const json& j) {
     r.uploadDate = getOrDefault<std::string>(j, "upload_date", "");
     r.fileStatus = getOrDefault<std::string>(j, "file_status", "");
     r.completePercentage = getOrDefault<std::string>(j, "complete_percentage", "");
+    r.filePhase2Status = getOrDefault<std::string>(j, "file_phase_2_status", "");
     r.returnUrl = getOrDefault<std::string>(j, "return_url", "");
 
     return r;
@@ -46,5 +48,6 @@ bool ZBFileStatusResponse::operator==(const ZBFileStatusResponse& other) const {
         uploadDate == other.uploadDate &&
         fileStatus == other.fileStatus &&
         completePercentage == other.completePercentage &&
+        filePhase2Status == other.filePhase2Status &&
         returnUrl == other.returnUrl;
 }

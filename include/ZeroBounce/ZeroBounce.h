@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,25 @@ struct SendFileOptions {
     int ipAddressColumn = 0;
     bool hasHeaderRow = true;
     bool removeDuplicate = true;
+    /** When set, sent as allow_phase_2 on validation sendFile only (not scoringSendFile). */
+    bool allowPhase2IsSet = false;
+    bool allowPhase2 = false;
+};
+
+/** Bulk getfile download_type query values (validation and scoring). */
+struct ZBDownloadType {
+    static constexpr const char* Phase1 = "phase_1";
+    static constexpr const char* Phase2 = "phase_2";
+    static constexpr const char* Combined = "combined";
+};
+
+/**
+ * Optional query parameters for bulk getFile (v2).
+ * downloadType empty = omit. activityData nullopt = omit (validation getFile only; ignored for scoring).
+ */
+struct GetFileOptions {
+    std::string downloadType;
+    std::optional<bool> activityData;
 };
 
 /**
@@ -52,6 +72,10 @@ class BaseRequestHandler {
             return doGet(std::forward<Ts>(ts)...);
         }
 
+        cpr::Response getWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) {
+            return doGetWithParameters(url, parameters);
+        }
+
         template <typename... Ts>
         cpr::Response Post(Ts&&... ts) {
             return doPost(std::forward<Ts>(ts)...);
@@ -60,6 +84,7 @@ class BaseRequestHandler {
     protected:
         virtual cpr::Response doGet(const cpr::Url& url) = 0;
         virtual cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) = 0;
+        virtual cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) = 0;
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) = 0;
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) = 0;
 };
@@ -74,6 +99,9 @@ class RequestHandler : public BaseRequestHandler {
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
             return cpr::Get(url, header);
+        }
+        cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) {
+            return cpr::Get(url, parameters);
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
             return cpr::Post(url, header, body);
@@ -169,6 +197,7 @@ class ZeroBounce {
             bool scoring,
             std::string fileId,
             std::string localDownloadPath,
+            const GetFileOptions* getFileOptions,
             OnSuccessCallback<ZBGetFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
@@ -355,6 +384,27 @@ class ZeroBounce {
         );
 
         /**
+         * Bulk get file with optional v2 query parameters (downloadType, activityData for validation only).
+         */
+        void getFileWithOptions(
+            std::string fileId,
+            std::string localDownloadPath,
+            const GetFileOptions& options,
+            OnSuccessCallback<ZBGetFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /**
+         * Whether a getfile response body looks like a JSON error payload (including HTTP 200).
+         */
+        static bool getFileJsonIndicatesError(const std::string& body);
+
+        /**
+         * Human-readable message from a getfile JSON error body.
+         */
+        static std::string formatGetFileErrorMessage(const std::string& body);
+
+        /**
          * Delete a file.
          *
          * @param fileId          the returned file ID when calling sendFile API
@@ -409,6 +459,17 @@ class ZeroBounce {
         void scoringGetFile(
             std::string fileId,
             std::string localDownloadPath,
+            OnSuccessCallback<ZBGetFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /**
+         * Scoring bulk get file with optional downloadType (activityData is not sent).
+         */
+        void scoringGetFileWithOptions(
+            std::string fileId,
+            std::string localDownloadPath,
+            const GetFileOptions& options,
             OnSuccessCallback<ZBGetFileResponse> successCallback,
             OnErrorCallback errorCallback
         );

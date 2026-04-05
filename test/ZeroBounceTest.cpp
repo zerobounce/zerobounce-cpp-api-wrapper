@@ -29,6 +29,9 @@ class MockRequestHandler : public BaseRequestHandler {
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
             return response;
         }
+        cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) {
+            return response;
+        }
 
     public:
         void setResponse(cpr::Response response) {
@@ -604,6 +607,58 @@ TEST_F(Tests, testGetFileValid) {
     ZeroBounceTest::getInstance()->getFile(
         "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
         "test/downloads/file.csv",
+        [&](ZBGetFileResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testGetFileJsonErrorHttp200) {
+    std::string responseJson = R"({"success":false,"message":"not ready"})";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200, "application/json");
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBErrorResponse expectedResponse = ZBErrorResponse::parseError("not ready");
+
+    ZeroBounceTest::getInstance()->getFile(
+        "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+        "test/downloads/file.csv",
+        [&](ZBGetFileResponse response) {
+            FAIL() << response.toString();
+        },
+        [&](ZBErrorResponse errorResponse) {
+            ASSERT_EQ(errorResponse, expectedResponse);
+        }
+    );
+}
+
+TEST_F(Tests, testGetFileJsonIndicatesErrorStatic) {
+    ASSERT_TRUE(ZeroBounce::getFileJsonIndicatesError(R"({"success":false,"message":""})"));
+    ASSERT_FALSE(ZeroBounce::getFileJsonIndicatesError(R"({"file_id":"x"})"));
+}
+
+TEST_F(Tests, testGetFileWithOptionsValidation) {
+    std::string responseJson = "\"Email Address\",\"First Name\"\n\"valid@example.com\",\"zero\"\n";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200, "application/octet-stream");
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBGetFileResponse expectedResponse;
+    expectedResponse.success = true;
+    expectedResponse.localFilePath = "test/downloads/file.csv";
+
+    GetFileOptions opts;
+    opts.downloadType = ZBDownloadType::Combined;
+    opts.activityData = true;
+
+    ZeroBounceTest::getInstance()->getFileWithOptions(
+        "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+        "test/downloads/file.csv",
+        opts,
         [&](ZBGetFileResponse response) {
             ASSERT_EQ(response, expectedResponse);
         },

@@ -21,6 +21,7 @@ class ZBFileStatusResponse {
         std::string uploadDate;
         std::string fileStatus;
         std::string completePercentage;
+        std::string filePhase2Status;
         std::string returnUrl;
 
         std::string toString();

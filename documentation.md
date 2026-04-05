@@ -185,6 +185,14 @@ ZeroBounce::getInstance()->getFile(
 );
 ```
 
+Bulk validation uses the [v2 bulk API](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-send-file). Optional [v2 get file](https://www.zerobounce.net/docs/email-validation-api-quickstart/v2-get-file) query parameters use `getFileWithOptions` / `scoringGetFileWithOptions` and a `GetFileOptions` object: set `downloadType` to `ZBDownloadType::Phase1`, `ZBDownloadType::Phase2`, or `ZBDownloadType::Combined`, and `activityData` to `std::optional<bool>` (`std::nullopt` to omit, `true`/`false` to send) for validation `getFileWithOptions` only (scoring omits `activity_data`). On `SendFileOptions`, set `allowPhase2IsSet` to `true` and `allowPhase2` as needed to send `allow_phase_2` for validation `sendFile` only (not `scoringSendFile`).
+
+If the HTTP status indicates failure, or the body is a JSON error (including some HTTP 200 responses with `"success": false`), the error callback runs with a parsed message—not the get-file success callback. To inspect a raw body yourself, use `ZeroBounce::getFileJsonIndicatesError(body)`; for a short message string use `ZeroBounce::formatGetFileErrorMessage(body)`.
+
+`ZBFileStatusResponse` includes `filePhase2Status` when the API returns it.
+
+If CMake fails while configuring libcpr’s bundled curl (for example `ZLIB::ZLIB` or a missing macOS SDK include path), reconfigure with `-DCPR_USE_SYSTEM_CURL=ON` so the build uses the system libcurl.
+
 * ####### Check the status of a file uploaded via "sendFile" method
 ```cpp
 std::string fileId = "<FILE_ID>";		// The returned file ID when calling sendfile API
