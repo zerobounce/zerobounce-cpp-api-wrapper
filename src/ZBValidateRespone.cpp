@@ -20,6 +20,7 @@ std::string ZBValidateResponse::toString(bool isBatch)
                 ", domain='" << domain << '\'' <<
                 ", domainAgeDays='" << domainAgeDays << '\'' <<
                 ", smtpProvider='" << smtpProvider << '\'' <<
+                ", catchallDomain=" << (catchallDomain.has_value() ? (catchallDomain.value() ? "true" : "false") : "null") <<
                 ", mxFound=" << mxFound <<
                 ", mxRecord='" << mxRecord << '\'' <<
                 ", firstName='" << firstName << '\'' <<
@@ -53,6 +54,10 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.domainAgeDays = getOrDefault<std::string>(j, "domain_age_days", "");
     r.smtpProvider = getOrDefault<std::string>(j, "smtp_provider", "");
 
+    if (j.contains("catchall_domain") && !j["catchall_domain"].is_null()) {
+        r.catchallDomain = j["catchall_domain"].get<bool>();
+    }
+
     bool mxFound;
     std::istringstream ss(getOrDefault<std::string>(j, "mx_found", "false"));
     ss >> std::boolalpha >> mxFound;
@@ -84,6 +89,7 @@ bool ZBValidateResponse::operator==(const ZBValidateResponse& other) const {
         mxFound == other.mxFound &&
         mxRecord == other.mxRecord &&
         smtpProvider == other.smtpProvider &&
+        catchallDomain == other.catchallDomain &&
         firstName == other.firstName &&
         lastName == other.lastName &&
         gender == other.gender &&

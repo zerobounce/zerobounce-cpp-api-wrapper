@@ -1,6 +1,7 @@
 #ifndef ZBVALIDATERESPONSE_H
 #define ZBVALIDATERESPONSE_H
 
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -26,6 +27,7 @@ class ZBValidateResponse {
         bool mxFound = false;
         std::string mxRecord;
         std::string smtpProvider;
+        std::optional<bool> catchallDomain;
         std::string firstName;
         std::string lastName;
         std::string gender;
