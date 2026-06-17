@@ -24,9 +24,11 @@ class MockRequestHandler : public BaseRequestHandler {
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
+            lastPostUrl = url.str();
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
+            lastPostUrl = url.str();
             return response;
         }
         cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) {
@@ -34,6 +36,8 @@ class MockRequestHandler : public BaseRequestHandler {
         }
 
     public:
+        std::string lastPostUrl;
+
         void setResponse(cpr::Response response) {
             this->response = response;
         }
@@ -433,6 +437,8 @@ TEST_F(Tests, testBatchEmailValidateValid) {
         emails,
         [&](ZBValidateBatchResponse response) {
             ASSERT_EQ(response, expectedResponse);
+            ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/validatebatch");
+            ASSERT_EQ(mockRequestHandler->lastPostUrl.find("bulkapi"), std::string::npos);
         },
         [&](ZBErrorResponse errorResponse) {
             FAIL() << errorResponse.toString();

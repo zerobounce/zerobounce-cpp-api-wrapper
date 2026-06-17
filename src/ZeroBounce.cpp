@@ -209,7 +209,7 @@ void ZeroBounce::validateBatch(
         }
 
         cpr::Response reqResponse = requestHandler->Post(
-            cpr::Url{bulkApiBaseUrl + "/validatebatch"},
+            cpr::Url{apiBaseUrl + "/validatebatch"},
             cpr::Header{
                 {"Accept", "application/json"},
                 {"Content-Type", "application/json"}
