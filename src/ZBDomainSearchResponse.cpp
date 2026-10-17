@@ -53,7 +53,8 @@ ZBDomainSearchResponse ZBDomainSearchResponse::from_json(const json& json_obj) {
     response.failureReason = getOrDefault<std::string>(json_obj, "failure_reason", "");
 
     response.otherDomainFormats = std::vector<ZBDomainFormat>();
-    const json domainFormats = json_obj["other_domain_formats"];
+    const json domainFormats = json_obj.contains("other_domain_formats")
+        ? json_obj["other_domain_formats"] : json::array();
     if (domainFormats.is_array()) {
         for (int index = 0; index < domainFormats.size(); index ++) {
             response.otherDomainFormats.push_back(
