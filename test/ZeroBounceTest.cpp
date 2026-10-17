@@ -22,6 +22,7 @@ class MockRequestHandler : public BaseRequestHandler {
             return response;
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
+            lastGetUrl = url.str();
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
