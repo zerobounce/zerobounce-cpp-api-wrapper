@@ -19,6 +19,8 @@ std::string ZBValidateResponse::toString(bool isBatch)
                 ", account='" << account << '\'' <<
                 ", domain='" << domain << '\'' <<
                 ", domainAgeDays='" << domainAgeDays << '\'' <<
+                ", activeInDays='" << activeInDays << '\'' <<
+                ", activeFirstSeen='" << activeFirstSeen << '\'' <<
                 ", smtpProvider='" << smtpProvider << '\'' <<
                 ", catchallDomain=" << (catchallDomain.has_value() ? (catchallDomain.value() ? "true" : "false") : "null") <<
                 ", mxFound=" << mxFound <<
@@ -52,6 +54,8 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.account = getOrDefault<std::string>(j, "account", "");
     r.domain = getOrDefault<std::string>(j, "domain", "");
     r.domainAgeDays = getOrDefault<std::string>(j, "domain_age_days", "");
+    r.activeInDays = getOrDefault<std::string>(j, "active_in_days", "");
+    r.activeFirstSeen = getOrDefault<std::string>(j, "active_first_seen", "");
     r.smtpProvider = getOrDefault<std::string>(j, "smtp_provider", "");
 
     if (j.contains("catchall_domain") && !j["catchall_domain"].is_null()) {
@@ -85,6 +89,8 @@ bool ZBValidateResponse::operator==(const ZBValidateResponse& other) const {
         domain == other.domain &&
         didYouMean == other.didYouMean &&
         domainAgeDays == other.domainAgeDays &&
+        activeInDays == other.activeInDays &&
+        activeFirstSeen == other.activeFirstSeen &&
         freeEmail == other.freeEmail &&
         mxFound == other.mxFound &&
         mxRecord == other.mxRecord &&

@@ -18,6 +18,7 @@ class MockRequestHandler : public BaseRequestHandler {
 
     protected:
         cpr::Response doGet(const cpr::Url& url) {
+            lastGetUrl = url.str();
             return response;
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
@@ -25,6 +26,7 @@ class MockRequestHandler : public BaseRequestHandler {
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
             lastPostUrl = url.str();
+            lastPostBody = body.str();
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
@@ -37,6 +39,8 @@ class MockRequestHandler : public BaseRequestHandler {
 
     public:
         std::string lastPostUrl;
+        std::string lastPostBody;
+        std::string lastGetUrl;
 
         void setResponse(cpr::Response response) {
             this->response = response;
@@ -374,6 +378,32 @@ TEST_F(Tests, testBatchEmailValidateInvalid) {
     );
 }
 
+TEST_F(Tests, testSingleEmailValidateWithOptions) {
+    std::string responseJson = R"({"address":"valid@example.com","status":"valid","sub_status":"","processed_at":"2023-04-05 13:29:47.553"})";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBValidateOptions options;
+    options.timeout = 30;
+    options.activityData = true;
+    options.verifyPlus = false;
+
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com",
+        "",
+        options,
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.address, "valid@example.com");
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("timeout=30"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("activity_data=true"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("verify_plus=false"), std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testBatchEmailValidateValid) {
     std::string responseJson = R"({
         "email_batch": [
@@ -433,12 +463,19 @@ TEST_F(Tests, testBatchEmailValidateValid) {
 		{"invalid@example.com"}
     };
 
+    ZBValidateOptions batchOptions;
+    batchOptions.timeout = 60;
+    batchOptions.verifyPlus = true;
+
     ZeroBounceTest::getInstance()->validateBatch(
         emails,
+        batchOptions,
         [&](ZBValidateBatchResponse response) {
             ASSERT_EQ(response, expectedResponse);
             ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/validatebatch");
             ASSERT_EQ(mockRequestHandler->lastPostUrl.find("bulkapi"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"timeout\":60"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"verify_plus\":true"), std::string::npos);
         },
         [&](ZBErrorResponse errorResponse) {
             FAIL() << errorResponse.toString();

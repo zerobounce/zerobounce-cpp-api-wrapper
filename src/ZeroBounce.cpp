@@ -182,21 +182,71 @@ void ZeroBounce::getApiUsage(
     );
 }
 
+static bool checkValidateTimeout(const std::optional<int>& timeout, OnErrorCallback errorCallback) {
+    if (!timeout.has_value()) {
+        return true;
+    }
+    int t = timeout.value();
+    if (t >= 3 && t <= 60) {
+        return true;
+    }
+    if (errorCallback) {
+        errorCallback(ZBErrorResponse::parseError(
+            "Invalid parameter: timeout (must be between 3 and 60 seconds)"
+        ));
+    }
+    return false;
+}
+
+static bool checkValidateBatchTimeout(const std::optional<int>& timeout, OnErrorCallback errorCallback) {
+    if (!timeout.has_value()) {
+        return true;
+    }
+    int t = timeout.value();
+    if (t >= 10 && t <= 120) {
+        return true;
+    }
+    if (errorCallback) {
+        errorCallback(ZBErrorResponse::parseError(
+            "Invalid parameter: timeout (must be between 10 and 120 seconds)"
+        ));
+    }
+    return false;
+}
+
 void ZeroBounce::validate(
     std::string email,
     std::string ipAddress,
     OnSuccessCallback<ZBValidateResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (invalidApiKey(errorCallback)) return;
+    validate(email, ipAddress, ZBValidateOptions{}, successCallback, errorCallback);
+}
 
-    sendRequest(
-        apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
-            "&email=" + urlEncode(email) +
-            "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress)),
-        successCallback,
-        errorCallback
-    );
+void ZeroBounce::validate(
+    std::string email,
+    std::string ipAddress,
+    const ZBValidateOptions& options,
+    OnSuccessCallback<ZBValidateResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (invalidApiKey(errorCallback)) return;
+    if (!checkValidateTimeout(options.timeout, errorCallback)) return;
+
+    std::string url = apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
+        "&email=" + urlEncode(email) +
+        "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress));
+    if (options.timeout.has_value()) {
+        url += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
+    }
+    if (options.activityData.has_value()) {
+        url += "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
+    }
+    if (options.verifyPlus.has_value()) {
+        url += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+    }
+
+    sendRequest(url, successCallback, errorCallback);
 }
 
 void ZeroBounce::validateBatch(
@@ -204,7 +254,17 @@ void ZeroBounce::validateBatch(
     OnSuccessCallback<ZBValidateBatchResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
+    validateBatch(emailBatch, ZBValidateOptions{}, successCallback, errorCallback);
+}
+
+void ZeroBounce::validateBatch(
+    std::vector<ZBEmailToValidate> emailBatch,
+    const ZBValidateOptions& options,
+    OnSuccessCallback<ZBValidateBatchResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
     if (invalidApiKey(errorCallback)) return;
+    if (!checkValidateBatchTimeout(options.timeout, errorCallback)) return;
 
     try {
         json payload;
@@ -221,6 +281,16 @@ void ZeroBounce::validateBatch(
             }
 
             payload["email_batch"].push_back(emailObj);
+        }
+
+        if (options.timeout.has_value()) {
+            payload["timeout"] = options.timeout.value();
+        }
+        if (options.activityData.has_value()) {
+            payload["activity_data"] = options.activityData.value();
+        }
+        if (options.verifyPlus.has_value()) {
+            payload["verify_plus"] = options.verifyPlus.value();
         }
 
         cpr::Response reqResponse = requestHandler->Post(

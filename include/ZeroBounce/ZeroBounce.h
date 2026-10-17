@@ -61,6 +61,15 @@ struct GetFileOptions {
 };
 
 /**
+ * Optional query/body parameters for GET /validate and POST /validatebatch.
+ */
+struct ZBValidateOptions {
+    std::optional<int> timeout;
+    std::optional<bool> activityData;
+    std::optional<bool> verifyPlus;
+};
+
+/**
  * Base class for handling requests.
  */
 class BaseRequestHandler {
@@ -325,6 +334,14 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
+        void validate(
+            std::string email,
+            std::string ipAddress,
+            const ZBValidateOptions& options,
+            OnSuccessCallback<ZBValidateResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
         /**
          * Validates a batch of emails.
          *
@@ -334,6 +351,13 @@ class ZeroBounce {
          */
         void validateBatch(
             std::vector<ZBEmailToValidate> emailBatch,
+            OnSuccessCallback<ZBValidateBatchResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void validateBatch(
+            std::vector<ZBEmailToValidate> emailBatch,
+            const ZBValidateOptions& options,
             OnSuccessCallback<ZBValidateBatchResponse> successCallback,
             OnErrorCallback errorCallback
         );

@@ -23,6 +23,8 @@ class ZBValidateResponse {
         std::string domain;
         std::string didYouMean;
         std::string domainAgeDays;
+        std::string activeInDays;
+        std::string activeFirstSeen;
         bool freeEmail = false;
         bool mxFound = false;
         std::string mxRecord;
