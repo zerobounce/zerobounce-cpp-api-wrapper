@@ -17,6 +17,7 @@
 #include "ZeroBounce/ZBGetFileResponse.h"
 #include "ZeroBounce/ZBDeleteFileResponse.h"
 #include "ZeroBounce/ZBActivityDataResponse.h"
+#include "ZeroBounce/ZBScoreEmailResponse.h"
 #include "ZeroBounce/ZBFindEmailResponse.h"
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
@@ -522,6 +523,24 @@ class ZeroBounce {
         void getActivityData(
             std::string email,
             OnSuccessCallback<ZBActivityDataResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /**
+         * Real-time AI scoring for a single email (GET /scoring).
+         */
+        void scoreEmail(
+            std::string email,
+            OnSuccessCallback<ZBScoreEmailResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /**
+         * Real-time AI scoring for a single email (POST /scoring, form-encoded).
+         */
+        void scoreEmailPost(
+            std::string email,
+            OnSuccessCallback<ZBScoreEmailResponse> successCallback,
             OnErrorCallback errorCallback
         );
 

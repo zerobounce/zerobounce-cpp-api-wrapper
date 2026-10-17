@@ -425,6 +425,59 @@ void ZeroBounce::getActivityData(
     );
 }
 
+void ZeroBounce::scoreEmail(
+    std::string email,
+    OnSuccessCallback<ZBScoreEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (invalidApiKey(errorCallback)) return;
+
+    sendRequest(
+        apiBaseUrl + "/scoring?api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email),
+        successCallback,
+        errorCallback
+    );
+}
+
+void ZeroBounce::scoreEmailPost(
+    std::string email,
+    OnSuccessCallback<ZBScoreEmailResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (invalidApiKey(errorCallback)) return;
+
+    try {
+        std::string body =
+            "api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email);
+
+        cpr::Response reqResponse = requestHandler->Post(
+            cpr::Url{apiBaseUrl + "/scoring"},
+            cpr::Header{
+                {"Accept", "application/json"},
+                {"Content-Type", "application/x-www-form-urlencoded"}
+            },
+            cpr::Body{body}
+        );
+
+        std::string rsp = reqResponse.text;
+
+        if (reqResponse.status_code > 299) {
+            if (errorCallback) {
+                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
+                errorCallback(errorResponse);
+            }
+        } else if (successCallback) {
+            ZBScoreEmailResponse response =
+                ZBScoreEmailResponse::from_json(json::parse(rsp));
+            successCallback(response);
+        }
+    } catch (const std::exception& e) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(e.what()));
+        }
+    }
+}
+
 template <typename T>
 void ZeroBounce::sendRequest(
     std::string urlPath,

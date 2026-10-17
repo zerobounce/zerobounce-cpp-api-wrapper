@@ -998,6 +998,49 @@ TEST_F(Tests, testActivityDataValid) {
     );
 }
 
+TEST_F(Tests, testScoreEmailValid) {
+    std::string responseJson = R"({"email":"mark@gmail.com","score":10})";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBScoreEmailResponse expectedResponse = ZBScoreEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->scoreEmail(
+        "mark@gmail.com",
+        [&](ZBScoreEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_TRUE(mockRequestHandler->lastGetUrl.find("/scoring?") != std::string::npos);
+            ASSERT_TRUE(mockRequestHandler->lastGetUrl.find("email=") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testScoreEmailPostValid) {
+    std::string responseJson = R"({"email":"mark@gmail.com","score":10})";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBScoreEmailResponse expectedResponse = ZBScoreEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->scoreEmailPost(
+        "mark@gmail.com",
+        [&](ZBScoreEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/scoring");
+            ASSERT_TRUE(mockRequestHandler->lastPostBody.find("api_key=") != std::string::npos);
+            ASSERT_TRUE(mockRequestHandler->lastPostBody.find("email=") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testFindMailStatusInvalid) {
     std::string responseJson = "{\n"
         "    \"email\": \"\",\n"
