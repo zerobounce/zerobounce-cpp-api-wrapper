@@ -233,6 +233,45 @@ void ZeroBounce::validate(
     if (invalidApiKey(errorCallback)) return;
     if (!checkValidateTimeout(options.timeout, errorCallback)) return;
 
+    if (options.usePost) {
+        std::string body =
+            "api_key=" + urlEncode(apiKey) +
+            "&email=" + urlEncode(email) +
+            "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress));
+        if (options.timeout.has_value()) {
+            body += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
+        }
+        if (options.activityData.has_value()) {
+            body += "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
+        }
+        if (options.verifyPlus.has_value()) {
+            body += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+        }
+        try {
+            cpr::Response reqResponse = requestHandler->Post(
+                cpr::Url{apiBaseUrl + "/validate"},
+                cpr::Header{
+                    {"Accept", "application/json"},
+                    {"Content-Type", "application/x-www-form-urlencoded"}
+                },
+                cpr::Body{body}
+            );
+            std::string rsp = reqResponse.text;
+            if (reqResponse.status_code > 299) {
+                if (errorCallback) {
+                    errorCallback(ZBErrorResponse::parseError(rsp));
+                }
+            } else if (successCallback) {
+                successCallback(ZBValidateResponse::from_json(json::parse(rsp)));
+            }
+        } catch (const std::exception& e) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError(e.what()));
+            }
+        }
+        return;
+    }
+
     std::string url = apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
         "&email=" + urlEncode(email) +
         "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress));

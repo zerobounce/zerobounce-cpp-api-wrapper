@@ -70,6 +70,7 @@ struct ZBValidateOptions {
     std::optional<int> timeout;
     std::optional<bool> activityData;
     std::optional<bool> verifyPlus;
+    bool usePost = false;
 };
 
 /**
