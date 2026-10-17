@@ -1019,6 +1019,27 @@ TEST_F(Tests, testScoreEmailValid) {
     );
 }
 
+TEST_F(Tests, testValidateS3FileValid) {
+    std::string responseJson = R"({"success":true,"file_id":"s3-1"})";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ValidateS3FileOptions options;
+    options.fileName = "bucket/key.csv";
+
+    ZeroBounceTest::getInstance()->validateS3File(
+        options,
+        [&](ZBSendFileResponse response) {
+            ASSERT_TRUE(response.success);
+            ASSERT_EQ(response.fileId, "s3-1");
+            ASSERT_TRUE(mockRequestHandler->lastPostUrl.find("/validateS3file") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testScoreEmailPostValid) {
     std::string responseJson = R"({"email":"mark@gmail.com","score":10})";
 

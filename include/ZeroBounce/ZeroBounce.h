@@ -21,6 +21,7 @@
 #include "ZeroBounce/ZBFindEmailResponse.h"
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
+#include "ZeroBounce/Priority3Options.h"
 
 #include <cpr/cpr.h>
 
@@ -28,6 +29,7 @@ template<typename T>
 using OnSuccessCallback = std::function<void(T response)>;
 
 using OnErrorCallback = std::function<void(ZBErrorResponse errorResponse)>;
+using OnRawJsonSuccessCallback = std::function<void(std::string jsonBody)>;
 
 /**
  * Struct representing the options for sending files in requests.
@@ -131,6 +133,7 @@ class ZeroBounce {
     private:
         std::string apiKey;
         std::string apiBaseUrl = "https://api.zerobounce.net/v2";
+        const std::string bulkApiRootUrl = "https://bulkapi.zerobounce.net";
         const std::string bulkApiBaseUrl = "https://bulkapi.zerobounce.net/v2";
         const std::string bulkApiScoringBaseUrl = "https://bulkapi.zerobounce.net/v2/scoring";
 
@@ -266,6 +269,9 @@ class ZeroBounce {
         );
 
     public:
+        BaseRequestHandler* getRequestHandler() { return requestHandler; }
+        const std::string& getApiKey() const { return apiKey; }
+
         ZeroBounce();
         ZeroBounce(const ZeroBounce& obj) = delete;
 
@@ -541,6 +547,122 @@ class ZeroBounce {
         void scoreEmailPost(
             std::string email,
             OnSuccessCallback<ZBScoreEmailResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        // Priority 3 — bulk email finder, domain search, list evaluator, filters, S3
+
+        void sendEmailFinderFile(
+            std::string filePath,
+            int domainColumn,
+            const EmailFinderSendFileOptions* options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void emailFinderFileStatus(
+            std::string fileId,
+            OnSuccessCallback<ZBFileStatusResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void emailFinderGetFile(
+            std::string fileId,
+            std::string localDownloadPath,
+            OnSuccessCallback<ZBGetFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void emailFinderDeleteFile(
+            std::string fileId,
+            OnSuccessCallback<ZBDeleteFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void sendDomainSearchFile(
+            std::string filePath,
+            int domainColumn,
+            const DomainSearchSendFileOptions* options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void domainSearchFileStatus(
+            std::string fileId,
+            OnSuccessCallback<ZBFileStatusResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void domainSearchGetFile(
+            std::string fileId,
+            std::string localDownloadPath,
+            OnSuccessCallback<ZBGetFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void domainSearchDeleteFile(
+            std::string fileId,
+            OnSuccessCallback<ZBDeleteFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void sendListEvaluatorFile(
+            std::string filePath,
+            int emailAddressColumn,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void getListEvaluatorResult(
+            std::string fileId,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void sendEvaluatedFile(
+            std::string filePath,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void addFilter(
+            std::string rule,
+            std::string target,
+            std::string value,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void listFilters(
+            bool usePost,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void deleteFilter(
+            std::string rule,
+            std::string target,
+            std::string value,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void validateS3File(
+            const ValidateS3FileOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void scoreS3File(
+            const ScoreS3FileOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void exportS3File(
+            std::string fileId,
+            std::string exportBucket,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
 
