@@ -6,11 +6,22 @@
 #include <iostream>
 
 #include <nlohmann/json.hpp>
+#include <curl/curl.h>
 
 #include "ZeroBounce/ZeroBounce.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+
+static std::string urlEncode(const std::string& value) {
+    char* escaped = curl_easy_escape(nullptr, value.c_str(), static_cast<int>(value.size()));
+    if (!escaped) {
+        throw std::bad_alloc();
+    }
+    std::string result(escaped);
+    curl_free(escaped);
+    return result;
+}
 
 ZeroBounce::ZeroBounce() {
     defaultRequestHandler = std::make_unique<RequestHandler>();
@@ -138,7 +149,7 @@ void ZeroBounce::getCredits(
     if (invalidApiKey(errorCallback)) return;
 
     sendRequest(
-        apiBaseUrl + "/getcredits?api_key=" + apiKey,
+        apiBaseUrl + "/getcredits?api_key=" + urlEncode(apiKey),
         successCallback,
         errorCallback
     );
@@ -156,9 +167,13 @@ void ZeroBounce::getApiUsage(
     std::string dateFormat = "%Y-%m-%d";
     std::ostringstream url;
 
-    url << apiBaseUrl << "/getapiusage?api_key=" << apiKey
-        << "&start_date=" << std::put_time(&startDate, dateFormat.c_str())
-        << "&end_date=" << std::put_time(&endDate, dateFormat.c_str());
+    std::ostringstream startStr;
+    std::ostringstream endStr;
+    startStr << std::put_time(&startDate, dateFormat.c_str());
+    endStr << std::put_time(&endDate, dateFormat.c_str());
+    url << apiBaseUrl << "/getapiusage?api_key=" << urlEncode(apiKey)
+        << "&start_date=" << urlEncode(startStr.str())
+        << "&end_date=" << urlEncode(endStr.str());
 
     sendRequest(
         url.str(),
@@ -176,9 +191,9 @@ void ZeroBounce::validate(
     if (invalidApiKey(errorCallback)) return;
 
     sendRequest(
-        apiBaseUrl + "/validate?api_key=" + apiKey +
-            "&email=" + email +
-            "&ip_address=" + (ipAddress.empty() ? "" : ipAddress),
+        apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
+            "&email=" + urlEncode(email) +
+            "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress)),
         successCallback,
         errorCallback
     );
@@ -334,7 +349,7 @@ void ZeroBounce::getActivityData(
     if (invalidApiKey(errorCallback)) return;
 
     sendRequest(
-        apiBaseUrl + "/activity?api_key=" + apiKey + "&email=" + email,
+        apiBaseUrl + "/activity?api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email),
         successCallback,
         errorCallback
     );
@@ -450,8 +465,8 @@ void ZeroBounce::fileStatusInternal(
     if (invalidApiKey(errorCallback)) return;
 
     sendRequest(
-        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/filestatus?api_key=" + apiKey
-            + "&file_id=" + fileId,
+        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/filestatus?api_key=" + urlEncode(apiKey)
+            + "&file_id=" + urlEncode(fileId),
         successCallback,
         errorCallback
     );
@@ -539,8 +554,8 @@ void ZeroBounce::deleteFileInternal(
     if (invalidApiKey(errorCallback)) return;
 
     sendRequest(
-        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/deletefile?api_key=" + apiKey
-            + "&file_id=" + fileId,
+        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/deletefile?api_key=" + urlEncode(apiKey)
+            + "&file_id=" + urlEncode(fileId),
         successCallback,
         errorCallback
     );
@@ -556,21 +571,21 @@ void ZeroBounce::findEmailInternal(
     OnErrorCallback errorCallback
 ) {
     std::stringstream urlStream;
-    urlStream << apiBaseUrl << "/guessformat?api_key=" << apiKey;
+    urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
-        urlStream << "&domain=" << domain;
+        urlStream << "&domain=" << urlEncode(domain);
     }
     if (company_name.size() > 0) {
-        urlStream << "&company_name=" << company_name;
+        urlStream << "&company_name=" << urlEncode(company_name);
     }
     if (first_name.size() > 0) {
-        urlStream << "&first_name=" << first_name;
+        urlStream << "&first_name=" << urlEncode(first_name);
     }
     if (middle_name.size() > 0) {
-        urlStream << "&middle_name=" << middle_name;
+        urlStream << "&middle_name=" << urlEncode(middle_name);
     }
     if (last_name.size() > 0) {
-        urlStream << "&last_name=" << last_name;
+        urlStream << "&last_name=" << urlEncode(last_name);
     }
     sendRequest(urlStream.str(), successCallback, errorCallback);
 }
@@ -642,12 +657,12 @@ void ZeroBounce::searchDomainInternal(
     OnErrorCallback errorCallback
 ) {
     std::stringstream urlStream;
-    urlStream << apiBaseUrl << "/guessformat?api_key=" << apiKey;
+    urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
-        urlStream << "&domain=" << domain;
+        urlStream << "&domain=" << urlEncode(domain);
     }
     if (company_name.size() > 0) {
-        urlStream << "&company_name=" << company_name;
+        urlStream << "&company_name=" << urlEncode(company_name);
     }
     sendRequest(urlStream.str(), successCallback, errorCallback);
 }
@@ -677,18 +692,18 @@ void ZeroBounce::findEmail(
     OnErrorCallback errorCallback
 ) {
     std::stringstream urlStream;
-    urlStream << apiBaseUrl << "/guessformat?api_key=" << apiKey;
+    urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
-        urlStream << "&domain=" << domain;
+        urlStream << "&domain=" << urlEncode(domain);
     }
     if (first_name.size() > 0) {
-        urlStream << "&first_name=" << first_name;
+        urlStream << "&first_name=" << urlEncode(first_name);
     }
     if (middle_name.size() > 0) {
-        urlStream << "&middle_name=" << middle_name;
+        urlStream << "&middle_name=" << urlEncode(middle_name);
     }
     if (last_name.size() > 0) {
-        urlStream << "&last_name=" << last_name;
+        urlStream << "&last_name=" << urlEncode(last_name);
     }
     sendRequest(urlStream.str(), successCallback, errorCallback);
 }

@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0026)
+  cmake_policy(SET CMP0026 NEW)
+endif()
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(ZeroBounce VERSION 2.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -14,7 +18,7 @@ include(FetchContent)
 FetchContent_Declare(
     cpr
     GIT_REPOSITORY https://github.com/libcpr/cpr.git
-    GIT_TAG 1.10.2
+    GIT_TAG 1.11.2
 )
 # Download and build nlohmann_json
 FetchContent_Declare(

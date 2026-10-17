@@ -95,19 +95,19 @@ class BaseRequestHandler {
 class RequestHandler : public BaseRequestHandler {
     protected:
         cpr::Response doGet(const cpr::Url& url) {
-            return cpr::Get(url, cpr::Timeout{120000});
+            return cpr::Get(url, cpr::Timeout{120000}, cpr::Redirect{false});
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Get(url, header, cpr::Timeout{120000});
+            return cpr::Get(url, header, cpr::Timeout{120000}, cpr::Redirect{false});
         }
         cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) {
-            return cpr::Get(url, parameters, cpr::Timeout{120000});
+            return cpr::Get(url, parameters, cpr::Timeout{120000}, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Post(url, header, body, cpr::Timeout{120000});
+            return cpr::Post(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
-            return cpr::Post(url, header, multipart, cpr::Timeout{120000});
+            return cpr::Post(url, header, multipart, cpr::Timeout{120000}, cpr::Redirect{false});
         }
 };
 
