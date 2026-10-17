@@ -494,6 +494,42 @@ void ZeroBounce::scoreS3File(
     postSendFileForm(this, bulkApiRootUrl + "/scoreS3file", fields, successCallback, errorCallback);
 }
 
+void ZeroBounce::listS3files(
+    std::optional<std::string> bucket,
+    std::optional<std::string> search,
+    OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (invalidApiKey(errorCallback)) {
+        return;
+    }
+    std::string url = bulkApiRootUrl + "/listS3files?api_key=" + p3UrlEncode(apiKey);
+    if (bucket.has_value() && !bucket->empty()) {
+        url += "&bucket=" + p3UrlEncode(*bucket);
+    }
+    if (search.has_value() && !search->empty()) {
+        url += "&search=" + p3UrlEncode(*search);
+    }
+    try {
+        cpr::Response reqResponse = getRequestHandler()->Get(
+            cpr::Url{url},
+            cpr::Header{{"Accept", "application/json"}}
+        );
+        std::string rsp = reqResponse.text;
+        if (reqResponse.status_code > 299) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError(rsp));
+            }
+        } else if (successCallback) {
+            successCallback(ZBS3ListFileEntry::listFromJson(json::parse(rsp)));
+        }
+    } catch (const std::exception& e) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(e.what()));
+        }
+    }
+}
+
 void ZeroBounce::exportS3File(
     std::string fileId,
     std::string exportBucket,

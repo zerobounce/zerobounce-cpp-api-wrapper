@@ -22,6 +22,7 @@
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
 #include "ZeroBounce/Priority3Options.h"
+#include "ZeroBounce/ZBS3ListFileEntry.h"
 
 #include <cpr/cpr.h>
 
@@ -664,6 +665,13 @@ class ZeroBounce {
             std::string fileId,
             std::string exportBucket,
             OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void listS3files(
+            std::optional<std::string> bucket,
+            std::optional<std::string> search,
+            OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
             OnErrorCallback errorCallback
         );
 
