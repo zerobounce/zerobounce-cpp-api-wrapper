@@ -881,3 +881,15 @@ void ZeroBounce::findEmail(
         domain, first_name, "", last_name, successCallback, errorCallback
     );
 }
+
+template void ZeroBounce::sendRequest<ZBFileStatusResponse>(
+    std::string urlPath,
+    OnSuccessCallback<ZBFileStatusResponse> successCallback,
+    OnErrorCallback errorCallback
+);
+
+template void ZeroBounce::sendRequest<ZBDeleteFileResponse>(
+    std::string urlPath,
+    OnSuccessCallback<ZBDeleteFileResponse> successCallback,
+    OnErrorCallback errorCallback
+);
