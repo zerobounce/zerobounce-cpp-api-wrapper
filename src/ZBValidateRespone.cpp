@@ -83,8 +83,8 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
 
 bool ZBValidateResponse::operator==(const ZBValidateResponse& other) const {
     return address == other.address &&
-        status == other.status;
-        subStatus == other.subStatus;
+        status == other.status &&
+        subStatus == other.subStatus &&
         account == other.account &&
         domain == other.domain &&
         didYouMean == other.didYouMean &&

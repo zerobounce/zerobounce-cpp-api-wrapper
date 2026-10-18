@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "HttpError.h"
 
 using json = nlohmann::json;
 
@@ -18,6 +19,18 @@ std::string p3UrlEncode(const std::string& value) {
     return result;
 }
 
+bool requireApiKey(ZeroBounce* zb, OnErrorCallback errorCallback) {
+    if (!zb->getApiKey().empty()) {
+        return true;
+    }
+    if (errorCallback) {
+        errorCallback(ZBErrorResponse::parseError(
+            "ZeroBounce is not initialized. Please call ZeroBounce::getInstance()->initialize(apiKey) first"
+        ));
+    }
+    return false;
+}
+
 void postSendFileForm(
     ZeroBounce* zb,
     const std::string& url,
@@ -25,6 +38,9 @@ void postSendFileForm(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
+    if (!requireApiKey(zb, errorCallback)) {
+        return;
+    }
     try {
         std::string body;
         for (size_t i = 0; i < fields.size(); ++i) {
@@ -41,17 +57,16 @@ void postSendFileForm(
             },
             cpr::Body{body}
         );
-        std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(rsp));
-            }
-        } else if (successCallback) {
-            successCallback(ZBSendFileResponse::from_json(json::parse(rsp)));
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(ZBSendFileResponse::from_json(parsed));
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }
@@ -62,22 +77,24 @@ void sendRawJsonGet(
     OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
+    if (!requireApiKey(zb, errorCallback)) {
+        return;
+    }
     try {
         cpr::Response reqResponse = zb->getRequestHandler()->Get(
             cpr::Url{url},
             cpr::Header{{"Accept", "application/json"}}
         );
-        std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(rsp));
-            }
-        } else if (successCallback) {
-            successCallback(rsp);
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(parsed.dump());
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }
@@ -89,6 +106,9 @@ void sendRawJsonFormPost(
     OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
+    if (!requireApiKey(zb, errorCallback)) {
+        return;
+    }
     try {
         std::string body;
         for (size_t i = 0; i < fields.size(); ++i) {
@@ -105,17 +125,16 @@ void sendRawJsonFormPost(
             },
             cpr::Body{body}
         );
-        std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(rsp));
-            }
-        } else if (successCallback) {
-            successCallback(rsp);
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(parsed.dump());
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }
@@ -128,6 +147,9 @@ void bulkRootMultipart(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
+    if (!requireApiKey(zb, errorCallback)) {
+        return;
+    }
     try {
         cpr::Multipart multipart{{"api_key", zb->getApiKey()}, {"file", cpr::File{filePath}}};
         for (const auto& field : fields) {
@@ -138,17 +160,16 @@ void bulkRootMultipart(
             cpr::Header{{"Content-Type", "multipart/form-data"}},
             multipart
         );
-        std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(rsp));
-            }
-        } else if (successCallback) {
-            successCallback(ZBSendFileResponse::from_json(json::parse(rsp)));
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(ZBSendFileResponse::from_json(parsed));
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }
@@ -159,8 +180,8 @@ std::vector<std::pair<std::string, std::string>> emailFinderFields(
 ) {
     std::vector<std::pair<std::string, std::string>> fields{{"domain_column", std::to_string(domainColumn)}};
     if (options != nullptr) {
-        if (options->hasHeaderRow.has_value() && *options->hasHeaderRow) {
-            fields.emplace_back("has_header_row", "true");
+        if (options->hasHeaderRow.has_value()) {
+            fields.emplace_back("has_header_row", *options->hasHeaderRow ? "true" : "false");
         }
         if (options->firstNameColumn > 0) {
             fields.emplace_back("first_name_column", std::to_string(options->firstNameColumn));
@@ -233,12 +254,13 @@ void ZeroBounce::emailFinderGetFile(
             cpr::Url{bulkApiRootUrl + "/email-finder/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId)}
         );
         std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            errorCallback(ZBErrorResponse::parseError(rsp));
+        std::string contentType = reqResponse.header["Content-Type"];
+        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
+            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
             return;
         }
         if (ZeroBounce::getFileJsonIndicatesError(rsp)) {
-            errorCallback(ZBErrorResponse::parseError(rsp));
+            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
             return;
         }
         std::ofstream out(localDownloadPath, std::ios::binary);
@@ -246,8 +268,8 @@ void ZeroBounce::emailFinderGetFile(
         ZBGetFileResponse response;
         response.localFilePath = localDownloadPath;
         successCallback(response);
-    } catch (const std::exception& e) {
-        errorCallback(ZBErrorResponse::parseError(e.what()));
+    } catch (const std::exception&) {
+        errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected response."));
     }
 }
 
@@ -275,8 +297,8 @@ void ZeroBounce::sendDomainSearchFile(
         return;
     }
     std::vector<std::pair<std::string, std::string>> fields{{"domain_column", std::to_string(domainColumn)}};
-    if (options != nullptr && options->hasHeaderRow.has_value() && *options->hasHeaderRow) {
-        fields.emplace_back("has_header_row", "true");
+    if (options != nullptr && options->hasHeaderRow.has_value()) {
+        fields.emplace_back("has_header_row", *options->hasHeaderRow ? "true" : "false");
     }
     bulkRootMultipart(
         this,
@@ -314,12 +336,13 @@ void ZeroBounce::domainSearchGetFile(
             cpr::Url{bulkApiRootUrl + "/domain-search/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId)}
         );
         std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            errorCallback(ZBErrorResponse::parseError(rsp));
+        std::string contentType = reqResponse.header["Content-Type"];
+        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
+            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
             return;
         }
         if (ZeroBounce::getFileJsonIndicatesError(rsp)) {
-            errorCallback(ZBErrorResponse::parseError(rsp));
+            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
             return;
         }
         std::ofstream out(localDownloadPath, std::ios::binary);
@@ -327,8 +350,8 @@ void ZeroBounce::domainSearchGetFile(
         ZBGetFileResponse response;
         response.localFilePath = localDownloadPath;
         successCallback(response);
-    } catch (const std::exception& e) {
-        errorCallback(ZBErrorResponse::parseError(e.what()));
+    } catch (const std::exception&) {
+        errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected response."));
     }
 }
 
@@ -515,17 +538,16 @@ void ZeroBounce::listS3files(
             cpr::Url{url},
             cpr::Header{{"Accept", "application/json"}}
         );
-        std::string rsp = reqResponse.text;
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(rsp));
-            }
-        } else if (successCallback) {
-            successCallback(ZBS3ListFileEntry::listFromJson(json::parse(rsp)));
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(ZBS3ListFileEntry::listFromJson(parsed));
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }

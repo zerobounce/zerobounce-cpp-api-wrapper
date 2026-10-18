@@ -9,6 +9,7 @@
 #include <curl/curl.h>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "HttpError.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -256,17 +257,16 @@ void ZeroBounce::validate(
                 },
                 cpr::Body{body}
             );
-            std::string rsp = reqResponse.text;
-            if (reqResponse.status_code > 299) {
-                if (errorCallback) {
-                    errorCallback(ZBErrorResponse::parseError(rsp));
-                }
-            } else if (successCallback) {
-                successCallback(ZBValidateResponse::from_json(json::parse(rsp)));
+            json parsed;
+            if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+                return;
             }
-        } catch (const std::exception& e) {
+            if (successCallback) {
+                successCallback(ZBValidateResponse::from_json(parsed));
+            }
+        } catch (const std::exception&) {
             if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError(e.what()));
+                errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
             }
         }
         return;
@@ -341,22 +341,29 @@ void ZeroBounce::validateBatch(
             cpr::Body{payload.dump()}
         );
 
-        std::string rsp = reqResponse.text;
-
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
-                errorCallback(errorResponse);
-            }
-        } else {
-            if (successCallback) {
-                ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(json::parse(rsp));
-                successCallback(response);
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
+        }
+        ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(parsed);
+        for (const auto& item : response.errors) {
+            if (item.emailAddress == "all") {
+                std::string message = item.error.empty()
+                    ? "Invalid API Key or your account ran out of credits"
+                    : item.error;
+                if (errorCallback) {
+                    errorCallback(ZBErrorResponse::parseError(message));
+                }
+                return;
             }
         }
-    } catch (const std::exception& e) {
-        ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
-        errorCallback(errorResponse);
+        if (successCallback) {
+            successCallback(response);
+        }
+    } catch (const std::exception&) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        }
     }
 }
 
@@ -498,21 +505,16 @@ void ZeroBounce::scoreEmailPost(
             cpr::Body{body}
         );
 
-        std::string rsp = reqResponse.text;
-
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
-                errorCallback(errorResponse);
-            }
-        } else if (successCallback) {
-            ZBScoreEmailResponse response =
-                ZBScoreEmailResponse::from_json(json::parse(rsp));
-            successCallback(response);
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
+        if (successCallback) {
+            successCallback(ZBScoreEmailResponse::from_json(parsed));
+        }
+    } catch (const std::exception&) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(e.what()));
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
     }
 }
@@ -523,28 +525,25 @@ void ZeroBounce::sendRequest(
     OnSuccessCallback<T> successCallback,
     OnErrorCallback errorCallback
 ) {
+    if (invalidApiKey(errorCallback)) return;
+
     try {
         cpr::Response reqResponse = requestHandler->Get(
             cpr::Url{urlPath},
             cpr::Header{{"Accept", "application/json"}}
         );
 
-        std::string rsp = reqResponse.text;
-
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
-                errorCallback(errorResponse);
-            }
-        } else {
-            if (successCallback) {
-                T response = T::from_json(json::parse(rsp));
-                successCallback(response);
-            }
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
-        ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
-        errorCallback(errorResponse);
+        if (successCallback) {
+            successCallback(T::from_json(parsed));
+        }
+    } catch (const std::exception&) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        }
     }
 }
 
@@ -586,11 +585,11 @@ void ZeroBounce::sendFileInternal(
                 multipart.parts.emplace_back(cpr::Part{"return_url", options.returnUrl});
         }
 
-        multipart.parts.emplace_back(cpr::Part{"has_header_row", options.hasHeaderRow});
-        multipart.parts.emplace_back(cpr::Part{"remove_duplicate", options.removeDuplicate});
+        multipart.parts.emplace_back(cpr::Part{"has_header_row", std::string(options.hasHeaderRow ? "true" : "false")});
+        multipart.parts.emplace_back(cpr::Part{"remove_duplicate", std::string(options.removeDuplicate ? "true" : "false")});
 
         if (!scoring && options.allowPhase2IsSet) {
-            multipart.parts.emplace_back(cpr::Part{"allow_phase_2", options.allowPhase2});
+            multipart.parts.emplace_back(cpr::Part{"allow_phase_2", std::string(options.allowPhase2 ? "true" : "false")});
         }
 
         cpr::Response reqResponse = requestHandler->Post(
@@ -599,22 +598,17 @@ void ZeroBounce::sendFileInternal(
             multipart
         );
 
-        std::string rsp = reqResponse.text;
-
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                ZBErrorResponse errorResponse = ZBErrorResponse::parseError(rsp);
-                errorCallback(errorResponse);
-            }
-        } else {
-            if (successCallback) {
-                ZBSendFileResponse response = ZBSendFileResponse::from_json(json::parse(rsp));
-                successCallback(response);
-            }
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
         }
-    } catch (const std::exception& e) {
-        ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
-        errorCallback(errorResponse);
+        if (successCallback) {
+            successCallback(ZBSendFileResponse::from_json(parsed));
+        }
+    } catch (const std::exception&) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        }
     }
 }
 
@@ -664,14 +658,8 @@ void ZeroBounce::getFileInternal(
 
         std::string rsp = reqResponse.text;
 
-        if (reqResponse.status_code > 299) {
-            if (errorCallback) {
-                std::string errPayload = rsp;
-                if (!rsp.empty() && rsp[0] == '{') {
-                    errPayload = formatGetFileErrorMessage(rsp);
-                }
-                errorCallback(ZBErrorResponse::parseError(errPayload));
-            }
+        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
+            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
         } else {
             if (successCallback) {
                 if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
