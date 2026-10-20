@@ -318,6 +318,74 @@ TEST_F(Tests, testSingleEmailValidateValid) {
     );
 }
 
+TEST_F(Tests, testSubStatusAiAgentMailboxValid) {
+    std::string responseJson = R"({
+        "address": "agent@example.com",
+        "status": "valid",
+        "sub_status": "ai_agent_mailbox"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "agent@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.status, ZBValidateStatus::Valid);
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::AiAgentMailbox);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testSubStatusAiAgentMailboxCatchAll) {
+    std::string responseJson = R"({
+        "address": "agent@example.com",
+        "status": "catch-all",
+        "sub_status": "ai_agent_mailbox"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "agent@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::AiAgentMailbox);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testUnknownSubStatusFallsBackToNone) {
+    // NLOHMANN_JSON_SERIALIZE_ENUM falls back to the first entry in its map,
+    // which is None, so a sub_status added to the API after this SDK shipped
+    // parses to None instead of throwing.
+    std::string responseJson = R"({
+        "address": "future@example.com",
+        "status": "valid",
+        "sub_status": "some_future_sub_status"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "future@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.status, ZBValidateStatus::Valid);
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::None);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testSingleEmailValidateWithEmptyIpAddress) {
     std::string responseJson = R"({
         "address": "valid@example.com",
