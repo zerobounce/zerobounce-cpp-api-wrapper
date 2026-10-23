@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/ZBS3ListFileEntry.h"
 #include "HttpError.h"
 
 using json = nlohmann::json;
@@ -448,6 +449,133 @@ void ZeroBounce::deleteFilter(
     );
 }
 
+
+void ZeroBounce::validateS3File(
+    const ValidateS3FileOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (options.fileName.empty()) {
+        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+        return;
+    }
+    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}};
+    if (options.hasHeaderRow.has_value()) {
+        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
+    }
+    if (options.removeDuplicates.has_value()) {
+        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
+    }
+    if (options.removeDuplicate.has_value()) {
+        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
+    }
+    if (options.emailAddressColumn.has_value()) {
+        fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
+    }
+    if (!options.returnUrl.empty()) {
+        fields.emplace_back("return_url", options.returnUrl);
+    }
+    if (options.firstNameColumn > 0) {
+        fields.emplace_back("first_name_column", std::to_string(options.firstNameColumn));
+    }
+    if (options.lastNameColumn > 0) {
+        fields.emplace_back("last_name_column", std::to_string(options.lastNameColumn));
+    }
+    if (options.genderColumn > 0) {
+        fields.emplace_back("gender_column", std::to_string(options.genderColumn));
+    }
+    if (options.ipAddressColumn > 0) {
+        fields.emplace_back("ip_address_column", std::to_string(options.ipAddressColumn));
+    }
+    if (options.allowPhase2.has_value()) {
+        fields.emplace_back("allow_phase_2", *options.allowPhase2 ? "true" : "false");
+    }
+    fields.emplace_back("api_key", apiKey);
+    postSendFileForm(this, bulkApiRootUrl + "/validateS3file", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::scoreS3File(
+    const ScoreS3FileOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (options.fileName.empty()) {
+        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+        return;
+    }
+    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}, {"api_key", apiKey}};
+    if (options.hasHeaderRow.has_value()) {
+        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
+    }
+    if (options.removeDuplicates.has_value()) {
+        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
+    }
+    if (options.removeDuplicate.has_value()) {
+        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
+    }
+    if (options.emailAddressColumn.has_value()) {
+        fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/scoreS3file", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::listS3files(
+    std::optional<std::string> bucket,
+    std::optional<std::string> search,
+    OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (invalidApiKey(errorCallback)) {
+        return;
+    }
+    std::string url = bulkApiRootUrl + "/listS3files?api_key=" + p3UrlEncode(apiKey);
+    if (bucket.has_value() && !bucket->empty()) {
+        url += "&bucket=" + p3UrlEncode(*bucket);
+    }
+    if (search.has_value() && !search->empty()) {
+        url += "&search=" + p3UrlEncode(*search);
+    }
+    try {
+        cpr::Response reqResponse = getRequestHandler()->Get(
+            cpr::Url{url},
+            cpr::Header{{"Accept", "application/json"}}
+        );
+        json parsed;
+        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
+            return;
+        }
+        if (successCallback) {
+            successCallback(ZBS3ListFileEntry::listFromJson(parsed));
+        }
+    } catch (const std::exception&) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        }
+    }
+}
+
+void ZeroBounce::exportS3File(
+    std::string fileId,
+    std::string exportBucket,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (fileId.empty()) {
+        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+        return;
+    }
+    if (exportBucket.empty()) {
+        errorCallback(ZBErrorResponse::parseError("Empty parameter: export_bucket"));
+        return;
+    }
+    postSendFileForm(
+        this,
+        bulkApiRootUrl + "/exportS3file",
+        {{"file_id", fileId}, {"export_bucket", exportBucket}, {"api_key", apiKey}},
+        successCallback,
+        errorCallback
+    );
+}
 
 // Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes on
 // the query string rather than in the body, and bodies are JSON with camelCase

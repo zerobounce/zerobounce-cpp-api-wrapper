@@ -10,7 +10,7 @@ Guidance for AI coding agents working in this repository.
 
 - `include/ZeroBounce/`: public headers. `ZeroBounce.h` is the client.
 - `src/ZeroBounce.cpp`: validation, bulk file, credits, activity, scoring.
-- `src/Priority3.cpp`: bulk email finder, domain search, list evaluator, filters, and the Inbox Placement Tester.
+- `src/Priority3.cpp`: bulk email finder, domain search, list evaluator, filters, S3, and the Inbox Placement Tester.
 - `src/HttpError.cpp`: turns HTTP failures, HTML pages, and empty or non-JSON bodies into a short `ZBErrorResponse`.
 - `test/ZeroBounceTest.cpp`: existing GoogleTest cases with a scripted response.
 - `test/OfflineApiTest.cpp`: offline suite. A fake `BaseRequestHandler` records every request and answers without the network.
@@ -28,12 +28,12 @@ CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `ctest`. That b
 
 ## Conventions
 
-- **Only endpoints documented at https://www.zerobounce.net/docs/.** Do not add a method for an endpoint that the public docs do not describe, even if it exists on the server.
+- **Only endpoints documented at https://www.zerobounce.net/docs/.** Do not add a method for an endpoint that the public docs do not describe, even if it exists on the server. Check before concluding something is undocumented: the S3 bulk endpoints live under https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api, not the main API reference.
 - **The list evaluator and the Inbox Placement Tester have their own base URLs** (`listEvaluatorBaseUrl`, `inboxPlacementBaseUrl`, settable via `setListEvaluatorBaseUrl` / `setInboxPlacementBaseUrl`). They are not built from the bulk base, and `sendEvaluatedFile` stays on it.
 - **The Inbox Placement Tester takes the API key as the `api_key` query parameter and JSON bodies with camelCase fields.** Only fields the caller set are sent. Its error bodies use `detail`. It is the only caller of `BaseRequestHandler::Put` and `Delete`, which have default implementations so existing subclasses keep compiling.
 
 - **One `ZeroBounce` per API key.** `getInstance()` is a process-wide singleton. Do not reuse it across users or requests. Construct a separate object per key. The offline concurrency test does this.
-- **Column indexes are 1-based.** `SendFileOptions` name, gender, and IP columns default to `0`, and `0` means the field is left out. `sendFile`'s email column is required and is sent as given, including `0`.
+- **Column indexes are 1-based.** `SendFileOptions` name, gender, and IP columns default to `0`, and `0` means the field is left out. `ValidateS3FileOptions::emailAddressColumn` is `std::optional<int>`: when it is set, `0` is sent. `sendFile`'s email column is required and is sent as given, including `0`.
 - **Optional parameters are omitted when unset.** `timeout`, `activityData`, `verifyPlus`, `allowPhase2`, `downloadType`, and `hasHeaderRow` (`std::optional<bool>`) are not sent until the caller sets them. Explicit `false` is sent as `false`.
 - **Booleans on multipart must be the strings `true` and `false`.** `cpr::Part` has no bool constructor; a bool becomes `1` or `0` and the API will not treat that as a boolean. Pass `std::string("true")` or `std::string("false")`.
 - **`allow_phase_2` is validation `sendFile` only**, and only when `allowPhase2IsSet` is true. Scoring `sendFile` ignores it. `activity_data` on get-file is validation only.

@@ -300,7 +300,9 @@ private:
             } else {
                 response.text = "{\"ok\":true,\"echo_api_key\":" + quoted + "}";
             }
-        } else if (request.path.find("getfile") != std::string::npos) {
+        } else if (request.path.find("listS3files") != std::string::npos) {
+            response.text = "[{\"name\":" + quoted + ",\"size\":1,\"last_modified\":\"\"}]";
+} else if (request.path.find("getfile") != std::string::npos) {
             response.header["Content-Type"] = "application/octet-stream";
             response.text = "email\n" + key + "@example.com\n";
         } else if (request.path.find("validatebatch") != std::string::npos) {
@@ -780,6 +782,54 @@ TEST(OfflineApi, Priority3EndpointsAndZeroColumn) {
     client.deleteFilter("exclude", "domain", "example.com", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     EXPECT_EQ(onlyRequest(api).path, "/v2/filters/delete");
 
+    api.clear();
+    ValidateS3FileOptions s3;
+    s3.fileName = "inbox.csv";
+    s3.emailAddressColumn = 0;
+    s3.hasHeaderRow = false;
+    s3.removeDuplicate = true;
+    client.validateS3File(s3, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto validated = onlyRequest(api);
+    EXPECT_EQ(validated.method, "POST");
+    EXPECT_EQ(validated.path, "/validateS3file");
+    EXPECT_EQ(validated.fields["file_name"], "inbox.csv");
+    EXPECT_EQ(validated.fields["email_address_column"], "0");
+    EXPECT_EQ(validated.fields["has_header_row"], "false");
+    EXPECT_EQ(validated.fields["remove_duplicate"], "true");
+    EXPECT_EQ(validated.fields.count("remove_duplicates"), 0u);
+    EXPECT_EQ(validated.fields.count("first_name_column"), 0u);
+
+    api.clear();
+    ScoreS3FileOptions score;
+    score.fileName = "inbox.csv";
+    client.scoreS3File(score, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto scored = onlyRequest(api);
+    EXPECT_EQ(scored.path, "/scoreS3file");
+    EXPECT_EQ(scored.fields.count("email_address_column"), 0u);
+
+    api.clear();
+    client.exportS3File("fid", "bucket-out", [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto exported = onlyRequest(api);
+    EXPECT_EQ(exported.path, "/exportS3file");
+    EXPECT_EQ(exported.fields["file_id"], "fid");
+    EXPECT_EQ(exported.fields["export_bucket"], "bucket-out");
+
+    api.clear();
+    client.listS3files(std::nullopt, std::nullopt, [&](std::vector<ZBS3ListFileEntry> files) {
+        ASSERT_EQ(files.size(), 1u);
+        EXPECT_EQ(files.front().name, "p3-key");
+    }, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto listedFiles = onlyRequest(api);
+    EXPECT_EQ(listedFiles.path, "/listS3files");
+    EXPECT_EQ(listedFiles.fields.count("bucket"), 0u);
+    EXPECT_EQ(listedFiles.fields.count("search"), 0u);
+
+    api.clear();
+    client.listS3files(std::string("inbox"), std::string("csv"), [&](std::vector<ZBS3ListFileEntry>) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto filtered = onlyRequest(api);
+    EXPECT_EQ(filtered.fields["bucket"], "inbox");
+    EXPECT_EQ(filtered.fields["search"], "csv");
+
 }
 
 #endif
@@ -815,6 +865,10 @@ TEST(OfflineApi, RejectsMissingKeyAndInvalidArgumentsBeforeRequest) {
     });
     keyed.sendEmailFinderFile(kCsv, 0, nullptr, [&](ZBSendFileResponse) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
         EXPECT_NE(error.toString().find("domain_column"), std::string::npos);
+    });
+    ValidateS3FileOptions missingName;
+    keyed.validateS3File(missingName, [&](ZBSendFileResponse) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("file_name"), std::string::npos);
     });
     EXPECT_EQ(api.size(), 0u);
 #endif

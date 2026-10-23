@@ -22,6 +22,7 @@
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
 #include "ZeroBounce/Priority3Options.h"
+#include "ZeroBounce/ZBS3ListFileEntry.h"
 
 #include <cpr/cpr.h>
 
@@ -612,7 +613,7 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
-        // Priority 3 — bulk email finder, domain search, list evaluator, filters
+        // Priority 3 — bulk email finder, domain search, list evaluator, filters, S3
 
         void sendEmailFinderFile(
             std::string filePath,
@@ -706,6 +707,32 @@ class ZeroBounce {
             std::string target,
             std::string value,
             OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void validateS3File(
+            const ValidateS3FileOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void scoreS3File(
+            const ScoreS3FileOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void exportS3File(
+            std::string fileId,
+            std::string exportBucket,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void listS3files(
+            std::optional<std::string> bucket,
+            std::optional<std::string> search,
+            OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
             OnErrorCallback errorCallback
         );
 
