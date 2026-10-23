@@ -23,6 +23,10 @@ struct RecordedRequest {
     std::string path;
     std::string apiKey;
     std::map<std::string, std::string> fields;
+    /// The full request URL, for assertions on path encoding and query order.
+    std::string url;
+    /// The raw request body, for assertions on JSON shape.
+    std::string body;
 };
 
 std::string urlDecode(const std::string& value) {
@@ -172,6 +176,14 @@ protected:
         return respond("POST", url.str(), {}, body.str());
     }
 
+    cpr::Response doPut(const cpr::Url& url, const cpr::Header&, const cpr::Body& body) override {
+        return respond("PUT", url.str(), {}, std::string(body));
+    }
+
+    cpr::Response doDelete(const cpr::Url& url, const cpr::Header&) override {
+        return respond("DELETE", url.str(), {}, "");
+    }
+
     cpr::Response doPost(const cpr::Url& url, const cpr::Header&, const cpr::Multipart& multipart) override {
         std::map<std::string, std::string> fields;
         for (const auto& part : multipart.parts) {
@@ -207,6 +219,8 @@ private:
         recorded.host = parsed.host;
         recorded.path = parsed.path;
         recorded.fields = fields;
+        recorded.url = url;
+        recorded.body = extra;
         auto keyIt = fields.find("api_key");
         recorded.apiKey = keyIt == fields.end() ? "" : keyIt->second;
 
@@ -278,11 +292,17 @@ private:
             return value.size() >= suffix.size() &&
                 value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
         };
-        if (request.path.find("getfile") != std::string::npos) {
+        if (request.path.find("/api/ipt") != std::string::npos) {
+            if (key.rfind("ipt-detail", 0) == 0) {
+                // The Inbox Placement Tester (Django REST framework) reports "detail".
+                response.status_code = 404;
+                response.text = "{\"detail\":\"Inbox placement test not found.\"}";
+            } else {
+                response.text = "{\"ok\":true,\"echo_api_key\":" + quoted + "}";
+            }
+        } else if (request.path.find("getfile") != std::string::npos) {
             response.header["Content-Type"] = "application/octet-stream";
             response.text = "email\n" + key + "@example.com\n";
-        } else if (request.path.find("listS3files") != std::string::npos) {
-            response.text = "[{\"name\":" + quoted + ",\"size\":1,\"last_modified\":\"\"}]";
         } else if (request.path.find("validatebatch") != std::string::npos) {
             response.text = "{\"email_batch\":[{\"address\":" + quoted + ",\"status\":\"valid\"}],\"errors\":[]}";
         } else if (endsWith(request.path, "/validate")) {
@@ -760,53 +780,6 @@ TEST(OfflineApi, Priority3EndpointsAndZeroColumn) {
     client.deleteFilter("exclude", "domain", "example.com", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     EXPECT_EQ(onlyRequest(api).path, "/v2/filters/delete");
 
-    api.clear();
-    ValidateS3FileOptions s3;
-    s3.fileName = "inbox.csv";
-    s3.emailAddressColumn = 0;
-    s3.hasHeaderRow = false;
-    s3.removeDuplicate = true;
-    client.validateS3File(s3, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
-    auto validated = onlyRequest(api);
-    EXPECT_EQ(validated.method, "POST");
-    EXPECT_EQ(validated.path, "/validateS3file");
-    EXPECT_EQ(validated.fields["file_name"], "inbox.csv");
-    EXPECT_EQ(validated.fields["email_address_column"], "0");
-    EXPECT_EQ(validated.fields["has_header_row"], "false");
-    EXPECT_EQ(validated.fields["remove_duplicate"], "true");
-    EXPECT_EQ(validated.fields.count("remove_duplicates"), 0u);
-    EXPECT_EQ(validated.fields.count("first_name_column"), 0u);
-
-    api.clear();
-    ScoreS3FileOptions score;
-    score.fileName = "inbox.csv";
-    client.scoreS3File(score, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
-    auto scored = onlyRequest(api);
-    EXPECT_EQ(scored.path, "/scoreS3file");
-    EXPECT_EQ(scored.fields.count("email_address_column"), 0u);
-
-    api.clear();
-    client.exportS3File("fid", "bucket-out", [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
-    auto exported = onlyRequest(api);
-    EXPECT_EQ(exported.path, "/exportS3file");
-    EXPECT_EQ(exported.fields["file_id"], "fid");
-    EXPECT_EQ(exported.fields["export_bucket"], "bucket-out");
-
-    api.clear();
-    client.listS3files(std::nullopt, std::nullopt, [&](std::vector<ZBS3ListFileEntry> files) {
-        ASSERT_EQ(files.size(), 1u);
-        EXPECT_EQ(files.front().name, "p3-key");
-    }, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
-    auto listedFiles = onlyRequest(api);
-    EXPECT_EQ(listedFiles.path, "/listS3files");
-    EXPECT_EQ(listedFiles.fields.count("bucket"), 0u);
-    EXPECT_EQ(listedFiles.fields.count("search"), 0u);
-
-    api.clear();
-    client.listS3files(std::string("inbox"), std::string("csv"), [&](std::vector<ZBS3ListFileEntry>) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
-    auto filtered = onlyRequest(api);
-    EXPECT_EQ(filtered.fields["bucket"], "inbox");
-    EXPECT_EQ(filtered.fields["search"], "csv");
 }
 
 #endif
@@ -842,10 +815,6 @@ TEST(OfflineApi, RejectsMissingKeyAndInvalidArgumentsBeforeRequest) {
     });
     keyed.sendEmailFinderFile(kCsv, 0, nullptr, [&](ZBSendFileResponse) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
         EXPECT_NE(error.toString().find("domain_column"), std::string::npos);
-    });
-    ValidateS3FileOptions missingName;
-    keyed.validateS3File(missingName, [&](ZBSendFileResponse) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
-        EXPECT_NE(error.toString().find("file_name"), std::string::npos);
     });
     EXPECT_EQ(api.size(), 0u);
 #endif
@@ -1021,4 +990,204 @@ TEST(OfflineApi, ValidateResponseEqualityIncludesSubStatus) {
     right.subStatus = left.subStatus;
     right.catchallDomain = true;
     EXPECT_NE(left, right);
+}
+
+TEST(OfflineApi, ValidateSendsTheNewOptionsOnlyWhenSet) {
+    FakeApi api;
+    OfflineClient client(api, "parity-key");
+
+    client.validate("a@example.com", "", ZBValidateOptions{}, [&](ZBValidateResponse) {},
+                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto plain = onlyRequest(api);
+    EXPECT_EQ(plain.url.find("domain_info"), std::string::npos);
+    EXPECT_EQ(plain.url.find("greylist_processing"), std::string::npos);
+    EXPECT_EQ(plain.url.find("callback_url"), std::string::npos);
+
+    api.clear();
+    ZBValidateOptions set;
+    set.domainInfo = true;
+    set.greylistProcessing = false;
+    client.validate("a@example.com", "", set, [&](ZBValidateResponse) {},
+                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto withOptions = onlyRequest(api);
+    EXPECT_NE(withOptions.url.find("domain_info=true"), std::string::npos);
+    EXPECT_NE(withOptions.url.find("greylist_processing=false"), std::string::npos);
+
+    api.clear();
+    ZBValidateOptions posted;
+    posted.greylistProcessing = true;
+    posted.callbackUrl = std::string("https://example.com/cb");
+    posted.usePost = true;
+    client.validate("a@example.com", "", posted, [&](ZBValidateResponse) {},
+                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto form = onlyRequest(api);
+    EXPECT_EQ(form.method, "POST");
+    EXPECT_NE(form.body.find("greylist_processing=true"), std::string::npos);
+    EXPECT_NE(form.body.find("callback_url="), std::string::npos);
+}
+
+TEST(OfflineApi, CallbackUrlWithoutGreylistProcessingSendsNoRequest) {
+    FakeApi api;
+    OfflineClient client(api, "parity-key");
+
+    ZBValidateOptions lonely;
+    lonely.callbackUrl = std::string("https://example.com/cb");
+    bool rejected = false;
+    client.validate("a@example.com", "", lonely, [&](ZBValidateResponse) { FAIL() << "success"; },
+                    [&](ZBErrorResponse error) {
+                        rejected = true;
+                        EXPECT_NE(error.toString().find("greylist_processing"), std::string::npos);
+                    });
+    EXPECT_TRUE(rejected);
+
+    ZBValidateOptions blank;
+    blank.greylistProcessing = true;
+    blank.callbackUrl = std::string("   ");
+    rejected = false;
+    client.validate("a@example.com", "", blank, [&](ZBValidateResponse) { FAIL() << "success"; },
+                    [&](ZBErrorResponse error) {
+                        rejected = true;
+                        EXPECT_NE(error.toString().find("callback_url"), std::string::npos);
+                    });
+    EXPECT_TRUE(rejected);
+    EXPECT_EQ(api.size(), 0u);
+}
+
+TEST(OfflineApi, InboxPlacementUsesItsOwnHostAndCamelCaseJson) {
+    FakeApi api;
+    OfflineClient client(api, "ipt-key");
+
+    client.getInboxPlacementProviders([&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto providers = onlyRequest(api);
+    EXPECT_EQ(providers.method, "GET");
+    EXPECT_EQ(providers.path, "/api/ipt/providers");
+    EXPECT_NE(providers.url.find("api_key=ipt-key"), std::string::npos);
+
+    api.clear();
+    client.getInboxPlacementTestTypes([&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    EXPECT_EQ(onlyRequest(api).path, "/api/ipt/test-types");
+
+    api.clear();
+    client.createInboxPlacementTest("basic", CreateInboxPlacementTestOptions{}, [&](std::string) {},
+                                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto created = onlyRequest(api);
+    EXPECT_EQ(created.method, "POST");
+    EXPECT_EQ(created.path, "/api/ipt/test");
+    EXPECT_EQ(created.body, "{\"name\":\"basic\"}");
+
+    api.clear();
+    CreateInboxPlacementTestOptions full;
+    full.testType = 1;
+    full.senderEmail = std::string("from@example.com");
+    full.webhookUrl = std::string("https://example.com/hook");
+    client.createInboxPlacementTest("full", full, [&](std::string) {},
+                                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto body = onlyRequest(api).body;
+    EXPECT_NE(body.find("\"testType\":1"), std::string::npos);
+    EXPECT_NE(body.find("\"senderEmail\":\"from@example.com\""), std::string::npos);
+    EXPECT_NE(body.find("\"webhookUrl\""), std::string::npos);
+
+    api.clear();
+    client.getInboxPlacementTest("a b/c", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    EXPECT_NE(onlyRequest(api).url.find("/api/ipt/test/a%20b%2Fc"), std::string::npos);
+
+    api.clear();
+    client.deleteInboxPlacementTest("t1", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    EXPECT_EQ(onlyRequest(api).method, "DELETE");
+
+    api.clear();
+    client.setInboxPlacementWebhook("https://example.com/hook", [&](std::string) {},
+                                    [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto webhook = onlyRequest(api);
+    EXPECT_EQ(webhook.method, "PUT");
+    EXPECT_NE(webhook.body.find("\"webhookUrl\""), std::string::npos);
+}
+
+TEST(OfflineApi, InboxPlacementListSendsOnlyTheFiltersThatAreSet) {
+    FakeApi api;
+    OfflineClient client(api, "ipt-key");
+
+    client.listInboxPlacementTests(ListInboxPlacementTestsOptions{}, [&](std::string) {},
+                                   [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto bare = onlyRequest(api);
+    EXPECT_EQ(bare.url.find("status="), std::string::npos);
+    EXPECT_EQ(bare.url.find("page="), std::string::npos);
+
+    api.clear();
+    ListInboxPlacementTestsOptions filters;
+    filters.status = std::string("finished");
+    filters.createdAfter = std::string("2026-01-01");
+    filters.page = 2;
+    filters.pageSize = 50;
+    client.listInboxPlacementTests(filters, [&](std::string) {},
+                                   [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    auto url = onlyRequest(api).url;
+    EXPECT_NE(url.find("status=finished"), std::string::npos);
+    EXPECT_NE(url.find("createdAfter=2026-01-01"), std::string::npos);
+    EXPECT_NE(url.find("page=2"), std::string::npos);
+    EXPECT_NE(url.find("page_size=50"), std::string::npos);
+}
+
+TEST(OfflineApi, InboxPlacementRejectsInvalidArgumentsBeforeRequest) {
+    FakeApi api;
+    OfflineClient client(api, "ipt-key");
+    auto expectRejected = [&](auto call) {
+        bool rejected = false;
+        call([&](std::string) { FAIL() << "success"; }, [&](ZBErrorResponse) { rejected = true; });
+        EXPECT_TRUE(rejected);
+    };
+
+    expectRejected([&](auto ok, auto err) { client.createInboxPlacementTest("", {}, ok, err); });
+    expectRejected([&](auto ok, auto err) { client.createInboxPlacementTest(std::string(65, 'x'), {}, ok, err); });
+    expectRejected([&](auto ok, auto err) {
+        CreateInboxPlacementTestOptions bad; bad.testType = 4;
+        client.createInboxPlacementTest("t", bad, ok, err);
+    });
+    expectRejected([&](auto ok, auto err) {
+        CreateInboxPlacementTestOptions bad; bad.testType = 1;
+        client.createInboxPlacementTest("t", bad, ok, err);
+    });
+    expectRejected([&](auto ok, auto err) {
+        CreateInboxPlacementTestOptions bad;
+        bad.providers = std::vector<InboxPlacementProviderSelection>{{1, 0}};
+        client.createInboxPlacementTest("t", bad, ok, err);
+    });
+    expectRejected([&](auto ok, auto err) {
+        ListInboxPlacementTestsOptions bad; bad.status = std::string("queued");
+        client.listInboxPlacementTests(bad, ok, err);
+    });
+    expectRejected([&](auto ok, auto err) {
+        ListInboxPlacementTestsOptions bad; bad.pageSize = 101;
+        client.listInboxPlacementTests(bad, ok, err);
+    });
+    expectRejected([&](auto ok, auto err) { client.getInboxPlacementTest("  ", ok, err); });
+    expectRejected([&](auto ok, auto err) { client.deleteInboxPlacementTest("", ok, err); });
+    expectRejected([&](auto ok, auto err) { client.setInboxPlacementWebhook("  ", ok, err); });
+    EXPECT_EQ(api.size(), 0u);
+}
+
+TEST(OfflineApi, InboxPlacementDetailErrorBecomesTheMessage) {
+    FakeApi api;
+    OfflineClient client(api, "ipt-detail-key");
+
+    bool rejected = false;
+    client.getInboxPlacementProviders([&](std::string) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
+        rejected = true;
+        EXPECT_NE(error.toString().find("Inbox placement test not found"), std::string::npos);
+        EXPECT_LT(error.toString().size(), 500u);
+    });
+    EXPECT_TRUE(rejected);
+}
+
+TEST(OfflineApi, ListEvaluatorUsesItsOwnBaseUrlAndEncodesFileId) {
+    FakeApi api;
+    OfflineClient client(api, "le-key");
+
+    client.getListEvaluatorResult("a b/c", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    EXPECT_NE(onlyRequest(api).url.find("/v2/listevaluator/a%20b%2Fc/"), std::string::npos);
+
+    api.clear();
+    client.setListEvaluatorBaseUrl("https://example.com/custom/listevaluator");
+    client.getListEvaluatorResult("fid", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    EXPECT_NE(onlyRequest(api).url.find("/custom/listevaluator/fid/"), std::string::npos);
 }

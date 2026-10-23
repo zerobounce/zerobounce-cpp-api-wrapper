@@ -32,7 +32,10 @@ std::string ZBValidateResponse::toString(bool isBatch)
                 ", region='" << region << '\'' <<
                 ", city='" << city << '\'' <<
                 ", zipCode='" << zipCode << '\'' <<
-                ", processedAt='" << processedAt << '\'';
+                ", processedAt='" << processedAt << '\'' <<
+                ", domainWebsiteExists='" << domainWebsiteExists << '\'' <<
+                ", domainRegistrantCompanyName='" << domainRegistrantCompanyName << '\'' <<
+                ", message='" << message << '\'';
 
     if (!isBatch) {
         stringStream << ", error='" << error << '\'';
@@ -76,6 +79,10 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.city = getOrDefault<std::string>(j, "city", "");
     r.zipCode = getOrDefault<std::string>(j, "zipcode", "");
     r.processedAt = getOrDefault<std::string>(j, "processed_at", "");
+    r.domainWebsiteExists = getOrDefault<std::string>(j, "domain_website_exists", "");
+    r.domainRegistrantCompanyName = getOrDefault<std::string>(j, "domain_registrant_company_name", "");
+    // A greylist pickup that is still running returns "Message" instead of a result.
+    r.message = getOrDefault<std::string>(j, "Message", "");
     r.error = getOrDefault<std::string>(j, "error", "");
 
     return r;

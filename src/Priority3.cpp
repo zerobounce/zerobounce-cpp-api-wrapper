@@ -379,7 +379,7 @@ void ZeroBounce::sendListEvaluatorFile(
     }
     bulkRootMultipart(
         this,
-        bulkApiBaseUrl + "/listevaluator/",
+        listEvaluatorBaseUrl + "/",
         filePath,
         {{"email_address_column", std::to_string(emailAddressColumn)}},
         successCallback,
@@ -394,7 +394,7 @@ void ZeroBounce::getListEvaluatorResult(
 ) {
     sendRawJsonGet(
         this,
-        bulkApiBaseUrl + "/listevaluator/" + fileId + "/?api_key=" + p3UrlEncode(apiKey),
+        listEvaluatorBaseUrl + "/" + p3UrlEncode(fileId) + "/?api_key=" + p3UrlEncode(apiKey),
         successCallback,
         errorCallback
     );
@@ -448,102 +448,68 @@ void ZeroBounce::deleteFilter(
     );
 }
 
-void ZeroBounce::validateS3File(
-    const ValidateS3FileOptions& options,
-    OnSuccessCallback<ZBSendFileResponse> successCallback,
-    OnErrorCallback errorCallback
-) {
-    if (options.fileName.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
-        return;
+
+// Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes on
+// the query string rather than in the body, and bodies are JSON with camelCase
+// fields. Only fields the caller set are sent.
+
+namespace {
+
+bool iptTestPath(const std::string& testId, std::string& out, OnErrorCallback errorCallback) {
+    if (testId.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: test_id"));
+        }
+        return false;
     }
-    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}};
-    if (options.hasHeaderRow.has_value()) {
-        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
-    }
-    if (options.removeDuplicates.has_value()) {
-        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
-    }
-    if (options.removeDuplicate.has_value()) {
-        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
-    }
-    if (options.emailAddressColumn.has_value()) {
-        fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
-    }
-    if (!options.returnUrl.empty()) {
-        fields.emplace_back("return_url", options.returnUrl);
-    }
-    if (options.firstNameColumn > 0) {
-        fields.emplace_back("first_name_column", std::to_string(options.firstNameColumn));
-    }
-    if (options.lastNameColumn > 0) {
-        fields.emplace_back("last_name_column", std::to_string(options.lastNameColumn));
-    }
-    if (options.genderColumn > 0) {
-        fields.emplace_back("gender_column", std::to_string(options.genderColumn));
-    }
-    if (options.ipAddressColumn > 0) {
-        fields.emplace_back("ip_address_column", std::to_string(options.ipAddressColumn));
-    }
-    if (options.allowPhase2.has_value()) {
-        fields.emplace_back("allow_phase_2", *options.allowPhase2 ? "true" : "false");
-    }
-    fields.emplace_back("api_key", apiKey);
-    postSendFileForm(this, bulkApiRootUrl + "/validateS3file", fields, successCallback, errorCallback);
+    auto first = testId.find_first_not_of(" \t\r\n");
+    auto last = testId.find_last_not_of(" \t\r\n");
+    out = p3UrlEncode(testId.substr(first, last - first + 1));
+    return true;
 }
 
-void ZeroBounce::scoreS3File(
-    const ScoreS3FileOptions& options,
-    OnSuccessCallback<ZBSendFileResponse> successCallback,
+void iptRequest(
+    ZeroBounce* zb,
+    const std::string& method,
+    const std::string& url,
+    const std::string* jsonBody,
+    OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (options.fileName.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+    if (!requireApiKey(zb, errorCallback)) {
         return;
-    }
-    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}, {"api_key", apiKey}};
-    if (options.hasHeaderRow.has_value()) {
-        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
-    }
-    if (options.removeDuplicates.has_value()) {
-        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
-    }
-    if (options.removeDuplicate.has_value()) {
-        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
-    }
-    if (options.emailAddressColumn.has_value()) {
-        fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
-    }
-    postSendFileForm(this, bulkApiRootUrl + "/scoreS3file", fields, successCallback, errorCallback);
-}
-
-void ZeroBounce::listS3files(
-    std::optional<std::string> bucket,
-    std::optional<std::string> search,
-    OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
-    OnErrorCallback errorCallback
-) {
-    if (invalidApiKey(errorCallback)) {
-        return;
-    }
-    std::string url = bulkApiRootUrl + "/listS3files?api_key=" + p3UrlEncode(apiKey);
-    if (bucket.has_value() && !bucket->empty()) {
-        url += "&bucket=" + p3UrlEncode(*bucket);
-    }
-    if (search.has_value() && !search->empty()) {
-        url += "&search=" + p3UrlEncode(*search);
     }
     try {
-        cpr::Response reqResponse = getRequestHandler()->Get(
-            cpr::Url{url},
-            cpr::Header{{"Accept", "application/json"}}
-        );
+        cpr::Response reqResponse;
+        if (method == "POST") {
+            reqResponse = zb->getRequestHandler()->Post(
+                cpr::Url{url},
+                cpr::Header{{"Accept", "application/json"}, {"Content-Type", "application/json"}},
+                cpr::Body{jsonBody ? *jsonBody : std::string{}}
+            );
+        } else if (method == "PUT") {
+            reqResponse = zb->getRequestHandler()->Put(
+                cpr::Url{url},
+                cpr::Header{{"Accept", "application/json"}, {"Content-Type", "application/json"}},
+                cpr::Body{jsonBody ? *jsonBody : std::string{}}
+            );
+        } else if (method == "DELETE") {
+            reqResponse = zb->getRequestHandler()->Delete(
+                cpr::Url{url},
+                cpr::Header{{"Accept", "application/json"}}
+            );
+        } else {
+            reqResponse = zb->getRequestHandler()->Get(
+                cpr::Url{url},
+                cpr::Header{{"Accept", "application/json"}}
+            );
+        }
         json parsed;
         if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
             return;
         }
         if (successCallback) {
-            successCallback(ZBS3ListFileEntry::listFromJson(parsed));
+            successCallback(parsed.dump());
         }
     } catch (const std::exception&) {
         if (errorCallback) {
@@ -552,25 +518,185 @@ void ZeroBounce::listS3files(
     }
 }
 
-void ZeroBounce::exportS3File(
-    std::string fileId,
-    std::string exportBucket,
-    OnSuccessCallback<ZBSendFileResponse> successCallback,
+}  // namespace
+
+void ZeroBounce::setListEvaluatorBaseUrl(const std::string& url) {
+    listEvaluatorBaseUrl = url;
+}
+
+void ZeroBounce::setInboxPlacementBaseUrl(const std::string& url) {
+    inboxPlacementBaseUrl = url;
+}
+
+void ZeroBounce::getInboxPlacementProviders(
+    OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (fileId.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+    iptRequest(this, "GET",
+        inboxPlacementBaseUrl + "/providers?api_key=" + p3UrlEncode(apiKey),
+        nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::getInboxPlacementTestTypes(
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    iptRequest(this, "GET",
+        inboxPlacementBaseUrl + "/test-types?api_key=" + p3UrlEncode(apiKey),
+        nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::createInboxPlacementTest(
+    const std::string& name,
+    const CreateInboxPlacementTestOptions& options,
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (name.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) errorCallback(ZBErrorResponse::parseError("Empty parameter: name"));
         return;
     }
-    if (exportBucket.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: export_bucket"));
+    if (name.size() > 64) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Invalid parameter: name (at most 64 characters)"));
+        }
         return;
     }
-    postSendFileForm(
-        this,
-        bulkApiRootUrl + "/exportS3file",
-        {{"file_id", fileId}, {"export_bucket", exportBucket}, {"api_key", apiKey}},
-        successCallback,
-        errorCallback
-    );
+    if (options.testType.has_value()) {
+        int testType = options.testType.value();
+        if (testType != 1 && testType != 2 && testType != 3) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError("Invalid parameter: test_type (must be 1, 2 or 3)"));
+            }
+            return;
+        }
+        bool senderMissing = !options.senderEmail.has_value() ||
+            options.senderEmail->find_first_not_of(" \t\r\n") == std::string::npos;
+        if (testType == 1 && senderMissing) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError(
+                    "Empty parameter: sender_email (required when test_type is 1)"));
+            }
+            return;
+        }
+    }
+    if (options.providers.has_value()) {
+        for (const auto& provider : options.providers.value()) {
+            if (provider.maxSeeds.has_value() && provider.maxSeeds.value() < 1) {
+                if (errorCallback) {
+                    errorCallback(ZBErrorResponse::parseError(
+                        "Invalid parameter: providers (max_seeds must be at least 1)"));
+                }
+                return;
+            }
+        }
+    }
+
+    json body;
+    body["name"] = name;
+    if (options.testType.has_value()) body["testType"] = options.testType.value();
+    if (options.senderEmail.has_value()) body["senderEmail"] = options.senderEmail.value();
+    if (options.providerIds.has_value()) body["providerIds"] = options.providerIds.value();
+    if (options.seedIds.has_value()) body["seedIds"] = options.seedIds.value();
+    if (options.providers.has_value()) {
+        json providers = json::array();
+        for (const auto& provider : options.providers.value()) {
+            json entry;
+            entry["id"] = provider.id;
+            if (provider.maxSeeds.has_value()) entry["maxSeeds"] = provider.maxSeeds.value();
+            providers.push_back(entry);
+        }
+        body["providers"] = providers;
+    }
+    if (options.webhookUrl.has_value()) body["webhookUrl"] = options.webhookUrl.value();
+
+    std::string encoded = body.dump();
+    iptRequest(this, "POST",
+        inboxPlacementBaseUrl + "/test?api_key=" + p3UrlEncode(apiKey),
+        &encoded, successCallback, errorCallback);
+}
+
+void ZeroBounce::getInboxPlacementTest(
+    const std::string& testId,
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::string path;
+    if (!iptTestPath(testId, path, errorCallback)) return;
+    iptRequest(this, "GET",
+        inboxPlacementBaseUrl + "/test/" + path + "?api_key=" + p3UrlEncode(apiKey),
+        nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::listInboxPlacementTests(
+    const ListInboxPlacementTestsOptions& options,
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (options.status.has_value() &&
+        options.status.value() != "running" && options.status.value() != "finished") {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Invalid parameter: status (must be running or finished)"));
+        }
+        return;
+    }
+    if (options.page.has_value() && options.page.value() < 1) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Invalid parameter: page (must be at least 1)"));
+        }
+        return;
+    }
+    if (options.pageSize.has_value() &&
+        (options.pageSize.value() < 1 || options.pageSize.value() > 100)) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Invalid parameter: page_size (must be between 1 and 100)"));
+        }
+        return;
+    }
+
+    std::string url = inboxPlacementBaseUrl + "/tests?api_key=" + p3UrlEncode(apiKey);
+    if (options.status.has_value()) url += "&status=" + p3UrlEncode(options.status.value());
+    if (options.createdAfter.has_value()) url += "&createdAfter=" + p3UrlEncode(options.createdAfter.value());
+    if (options.createdBefore.has_value()) url += "&createdBefore=" + p3UrlEncode(options.createdBefore.value());
+    if (options.page.has_value()) url += "&page=" + std::to_string(options.page.value());
+    if (options.pageSize.has_value()) url += "&page_size=" + std::to_string(options.pageSize.value());
+    iptRequest(this, "GET", url, nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::deleteInboxPlacementTest(
+    const std::string& testId,
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::string path;
+    if (!iptTestPath(testId, path, errorCallback)) return;
+    iptRequest(this, "DELETE",
+        inboxPlacementBaseUrl + "/test/" + path + "?api_key=" + p3UrlEncode(apiKey),
+        nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::getInboxPlacementWebhook(
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    iptRequest(this, "GET",
+        inboxPlacementBaseUrl + "/webhook?api_key=" + p3UrlEncode(apiKey),
+        nullptr, successCallback, errorCallback);
+}
+
+void ZeroBounce::setInboxPlacementWebhook(
+    const std::string& webhookUrl,
+    OnRawJsonSuccessCallback successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (webhookUrl.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) errorCallback(ZBErrorResponse::parseError("Empty parameter: webhook_url"));
+        return;
+    }
+    json body;
+    body["webhookUrl"] = webhookUrl;
+    std::string encoded = body.dump();
+    iptRequest(this, "PUT",
+        inboxPlacementBaseUrl + "/webhook?api_key=" + p3UrlEncode(apiKey),
+        &encoded, successCallback, errorCallback);
 }

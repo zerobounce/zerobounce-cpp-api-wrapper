@@ -57,6 +57,23 @@ std::string stripErrorPrefix(std::string message) {
     }
 }
 
+// Pulls the readable message out of an API error body. "detail" is how the
+// Inbox Placement Tester (Django REST framework) reports errors.
+std::string jsonErrorText(const json& object) {
+    if (!object.is_object()) {
+        return "";
+    }
+    for (const char* key : {"error", "message", "error_message", "detail"}) {
+        if (object.contains(key) && object[key].is_string()) {
+            std::string value = trimCopy(object[key].get<std::string>());
+            if (!value.empty()) {
+                return value;
+            }
+        }
+    }
+    return "";
+}
+
 bool jsonHasErrorOrMessageKey(const json& object) {
     for (auto it = object.begin(); it != object.end(); ++it) {
         if (it.key().find("error") != std::string::npos || it.key().find("message") != std::string::npos) {
@@ -102,6 +119,10 @@ std::string zbMessageFromBody(const std::string& body, long statusCode) {
                 if (accessDenied && (cloudflare || !jsonHasErrorOrMessageKey(parsed))) {
                     return title;
                 }
+            }
+            std::string fromField = jsonErrorText(parsed);
+            if (!fromField.empty()) {
+                return stripErrorPrefix(fromField);
             }
             return trimmed;
         } catch (const std::exception&) {

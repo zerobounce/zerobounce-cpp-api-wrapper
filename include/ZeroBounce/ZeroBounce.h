@@ -22,7 +22,6 @@
 #include "ZeroBounce/ZBDomainSearchResponse.h"
 #include "ZeroBounce/ZBApiURL.h"
 #include "ZeroBounce/Priority3Options.h"
-#include "ZeroBounce/ZBS3ListFileEntry.h"
 
 #include <cpr/cpr.h>
 
@@ -71,7 +70,46 @@ struct ZBValidateOptions {
     std::optional<int> timeout;
     std::optional<bool> activityData;
     std::optional<bool> verifyPlus;
+    /** Adds domainWebsiteExists and domainRegistrantCompanyName to the response. */
+    std::optional<bool> domainInfo;
+    /** Processes a greylisted address again instead of returning it as unknown. */
+    std::optional<bool> greylistProcessing;
+    /** Where the result is sent once ready. Only valid with greylistProcessing = true. */
+    std::optional<std::string> callbackUrl;
     bool usePost = false;
+};
+
+/** A per-provider seed cap for createInboxPlacementTest. */
+struct InboxPlacementProviderSelection {
+    long long id = 0;
+    /** At least 1 when given. */
+    std::optional<long long> maxSeeds;
+};
+
+/** Options for createInboxPlacementTest. Unset fields are not sent. */
+struct CreateInboxPlacementTestOptions {
+    /** 1 (Email, needs senderEmail), 2 (Unique ID) or 3 (Auto Alias). */
+    std::optional<int> testType;
+    /** The From address to match; required when testType is 1. */
+    std::optional<std::string> senderEmail;
+    std::optional<std::vector<long long>> providerIds;
+    std::optional<std::vector<long long>> seedIds;
+    std::optional<std::vector<InboxPlacementProviderSelection>> providers;
+    std::optional<std::string> webhookUrl;
+};
+
+/** Filters for listInboxPlacementTests. Unset fields are not sent. */
+struct ListInboxPlacementTestsOptions {
+    /** "running" or "finished". */
+    std::optional<std::string> status;
+    /** ISO 8601 date or datetime. */
+    std::optional<std::string> createdAfter;
+    /** ISO 8601 date or datetime. */
+    std::optional<std::string> createdBefore;
+    /** From 1. */
+    std::optional<int> page;
+    /** 1 to 100. */
+    std::optional<int> pageSize;
 };
 
 /**
@@ -95,12 +133,31 @@ class BaseRequestHandler {
             return doPost(std::forward<Ts>(ts)...);
         }
 
+        template <typename... Ts>
+        cpr::Response Put(Ts&&... ts) {
+            return doPut(std::forward<Ts>(ts)...);
+        }
+
+        template <typename... Ts>
+        cpr::Response Delete(Ts&&... ts) {
+            return doDelete(std::forward<Ts>(ts)...);
+        }
+
     protected:
         virtual cpr::Response doGet(const cpr::Url& url) = 0;
         virtual cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) = 0;
         virtual cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) = 0;
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) = 0;
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) = 0;
+
+        // PUT and DELETE are only used by the Inbox Placement Tester. They have
+        // defaults rather than being pure so existing subclasses keep compiling.
+        virtual cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
+            return cpr::Put(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
+        }
+        virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
+            return cpr::Delete(url, header, cpr::Timeout{120000}, cpr::Redirect{false});
+        }
 };
 
 /**
@@ -136,6 +193,9 @@ class ZeroBounce {
         std::string apiKey;
         std::string apiBaseUrl = "https://api.zerobounce.net/v2";
         const std::string bulkApiRootUrl = "https://bulkapi.zerobounce.net";
+        // The list evaluator and the Inbox Placement Tester are not under the bulk /v2 path.
+        std::string listEvaluatorBaseUrl = "https://bulkapi.zerobounce.net/v2/listevaluator";
+        std::string inboxPlacementBaseUrl = "https://bulkapi.zerobounce.net/api/ipt";
         const std::string bulkApiBaseUrl = "https://bulkapi.zerobounce.net/v2";
         const std::string bulkApiScoringBaseUrl = "https://bulkapi.zerobounce.net/v2/scoring";
 
@@ -552,7 +612,7 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
-        // Priority 3 — bulk email finder, domain search, list evaluator, filters, S3
+        // Priority 3 — bulk email finder, domain search, list evaluator, filters
 
         void sendEmailFinderFile(
             std::string filePath,
@@ -649,29 +709,58 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
-        void validateS3File(
-            const ValidateS3FileOptions& options,
-            OnSuccessCallback<ZBSendFileResponse> successCallback,
+        /** Override the list evaluator base URL. */
+        void setListEvaluatorBaseUrl(const std::string& url);
+
+        /** Override the Inbox Placement Tester base URL. */
+        void setInboxPlacementBaseUrl(const std::string& url);
+
+        // Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes
+        // on the query string and bodies are JSON with camelCase fields.
+
+        void getInboxPlacementProviders(
+            OnRawJsonSuccessCallback successCallback,
             OnErrorCallback errorCallback
         );
 
-        void scoreS3File(
-            const ScoreS3FileOptions& options,
-            OnSuccessCallback<ZBSendFileResponse> successCallback,
+        void getInboxPlacementTestTypes(
+            OnRawJsonSuccessCallback successCallback,
             OnErrorCallback errorCallback
         );
 
-        void exportS3File(
-            std::string fileId,
-            std::string exportBucket,
-            OnSuccessCallback<ZBSendFileResponse> successCallback,
+        void createInboxPlacementTest(
+            const std::string& name,
+            const CreateInboxPlacementTestOptions& options,
+            OnRawJsonSuccessCallback successCallback,
             OnErrorCallback errorCallback
         );
 
-        void listS3files(
-            std::optional<std::string> bucket,
-            std::optional<std::string> search,
-            OnSuccessCallback<std::vector<ZBS3ListFileEntry>> successCallback,
+        void getInboxPlacementTest(
+            const std::string& testId,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void listInboxPlacementTests(
+            const ListInboxPlacementTestsOptions& options,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void deleteInboxPlacementTest(
+            const std::string& testId,
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void getInboxPlacementWebhook(
+            OnRawJsonSuccessCallback successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        void setInboxPlacementWebhook(
+            const std::string& webhookUrl,
+            OnRawJsonSuccessCallback successCallback,
             OnErrorCallback errorCallback
         );
 

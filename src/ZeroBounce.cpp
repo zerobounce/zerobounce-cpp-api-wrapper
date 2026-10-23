@@ -234,6 +234,20 @@ void ZeroBounce::validate(
     if (invalidApiKey(errorCallback)) return;
     if (!checkValidateTimeout(options.timeout, errorCallback)) return;
 
+    // callbackUrl only means anything while greylist processing is on, so it is
+    // rejected here rather than letting the API take the request.
+    if (options.callbackUrl.has_value()) {
+        if (options.greylistProcessing != std::optional<bool>(true)) {
+            errorCallback(ZBErrorResponse::parseError(
+                "Invalid parameter: callback_url requires greylist_processing = true"));
+            return;
+        }
+        if (options.callbackUrl->find_first_not_of(" \t\r\n") == std::string::npos) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: callback_url"));
+            return;
+        }
+    }
+
     if (options.usePost) {
         std::string body =
             "api_key=" + urlEncode(apiKey) +
@@ -247,6 +261,15 @@ void ZeroBounce::validate(
         }
         if (options.verifyPlus.has_value()) {
             body += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+        }
+        if (options.domainInfo.has_value()) {
+            body += "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
+        }
+        if (options.greylistProcessing.has_value()) {
+            body += "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
+        }
+        if (options.callbackUrl.has_value()) {
+            body += "&callback_url=" + urlEncode(options.callbackUrl.value());
         }
         try {
             cpr::Response reqResponse = requestHandler->Post(
@@ -283,6 +306,15 @@ void ZeroBounce::validate(
     }
     if (options.verifyPlus.has_value()) {
         url += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+    }
+    if (options.domainInfo.has_value()) {
+        url += "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
+    }
+    if (options.greylistProcessing.has_value()) {
+        url += "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
+    }
+    if (options.callbackUrl.has_value()) {
+        url += "&callback_url=" + urlEncode(options.callbackUrl.value());
     }
 
     sendRequest(url, successCallback, errorCallback);

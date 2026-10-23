@@ -16,20 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bulk domain search (`sendDomainSearchFile`, `domainSearchFileStatus`, `domainSearchGetFile`, `domainSearchDeleteFile`).
 - List evaluator (`sendListEvaluatorFile`, `getListEvaluatorResult`, `sendEvaluatedFile`).
 - Filters (`addFilter`, `listFilters`, `deleteFilter`).
-- S3 bulk (`validateS3File`, `scoreS3File`, `exportS3File`, `listS3files`).
+- `ZBValidateOptions` accepts `domainInfo`, `greylistProcessing`, and `callbackUrl`. `callbackUrl` needs `greylistProcessing = true` and is rejected without it, and when blank, before a request is sent.
+- `ZBValidateResponse` carries `domainWebsiteExists`, `domainRegistrantCompanyName`, and `message`. `message` is read from the API's `Message` key, returned while greylist processing is still running.
+- Inbox Placement Tester on `https://bulkapi.zerobounce.net/api/ipt`: `getInboxPlacementProviders`, `getInboxPlacementTestTypes`, `createInboxPlacementTest`, `getInboxPlacementTest`, `listInboxPlacementTests`, `deleteInboxPlacementTest`, `getInboxPlacementWebhook`, `setInboxPlacementWebhook`.
+- `setListEvaluatorBaseUrl` and `setInboxPlacementBaseUrl` override those base URLs.
+- `BaseRequestHandler` gains `Put` and `Delete`, used by the Inbox Placement Tester. Both have default implementations, so existing subclasses keep compiling.
 
 ### Changed
+
+- List evaluator requests use their own base URL (`https://bulkapi.zerobounce.net/v2/listevaluator`) instead of building the path from the bulk base, and the file id is URL-encoded as one path segment. `sendEvaluatedFile` stays on the bulk base.
 
 - API requests time out after 120 seconds and do not follow redirects.
 - Query values, including the API key, email, and file id, are percent-encoded.
 
 ### Fixed
 
+- An error body whose JSON carries `error`, `message`, `error_message`, or `detail` reports that text instead of the raw JSON. `detail` is what the Inbox Placement Tester (Django REST framework) returns.
+
 - A 403 HTML "Access denied" page (about 1.4 MB from the live API on `getFile`) is returned as a short error. An HTML page with status 200 is an error as well, including `getFile`, `emailFinderGetFile`, and `domainSearchGetFile`, instead of a saved CSV or a JSON parse.
 - Empty and non-JSON bodies are a short error. The message is no longer the nlohmann `[json.exception.parse_error…]` text, and a repeated `Error:` / `[Error]:` prefix is removed.
 - `validateBatch` reports an account-level failure (HTTP 200, error for address `all`, such as an invalid API key or no credits) through the error callback. An error for one address stays on the successful result.
 - `sendFile` / `scoringSendFile` send `has_header_row`, `remove_duplicate`, and `allow_phase_2` as `true` or `false`. Bulk email finder and domain search send `has_header_row` when it is set to false.
-- `findEmail`, `searchDomain`, and the bulk finder, domain search, list evaluator, filter, and S3 calls reject an empty API key before a request is sent.
+- `findEmail`, `searchDomain`, and the bulk finder, domain search, list evaluator, and filter calls reject an empty API key before a request is sent.
 - `ZBValidateResponse::operator==` compares every field. It previously stopped after `address` and `status`.
 
 ### Security

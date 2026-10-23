@@ -38,6 +38,12 @@ class ZBValidateResponse {
         std::string zipCode;
         std::string country;
         std::string processedAt;
+        /** With domainInfo: whether the domain has a website ("True", "False" or "unchecked"). */
+        std::string domainWebsiteExists;
+        /** With domainInfo: the WHOIS registrant company, "Registrant info not found" or "unchecked". */
+        std::string domainRegistrantCompanyName;
+        /** Set instead of a result while greylist processing runs. The API spells this key "Message". */
+        std::string message;
         std::string error;
 
         std::string toString(bool isBatch = false);

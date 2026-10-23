@@ -380,3 +380,69 @@ You should see an output like this
 2. **Actions → Publish → Run workflow** with that tag.
 
 No package registry — GitHub release only. Pin the tag in FetchContent or as a submodule.
+
+## Validate options
+
+```cpp
+ZBValidateOptions options;
+// domainInfo adds domainWebsiteExists and domainRegistrantCompanyName.
+options.domainInfo = true;
+// greylistProcessing re-runs a greylisted address instead of returning unknown.
+options.greylistProcessing = true;
+// callbackUrl is only allowed together with greylistProcessing = true.
+options.callbackUrl = std::string("https://example.com/zerobounce-callback");
+
+zb->validate("someone@example.com", "", options,
+    [](ZBValidateResponse response) {
+        // While the greylist retry is still running the API returns a message
+        // instead of a result; validate again in about 30 minutes.
+        std::cout << response.message << " " << response.domainWebsiteExists << std::endl;
+    },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+```
+
+## Inbox Placement Tester
+
+Lives on `https://bulkapi.zerobounce.net/api/ipt` and spends inbox test credits.
+
+```cpp
+zb->getInboxPlacementProviders(
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+// testType 1 (Email) needs senderEmail; 2 is Unique ID and 3 is Auto Alias.
+CreateInboxPlacementTestOptions options;
+options.testType = 1;
+options.senderEmail = std::string("news@example.com");
+options.providers = std::vector<InboxPlacementProviderSelection>{{1, 5}};
+options.webhookUrl = std::string("https://example.com/ipt-webhook");
+
+zb->createInboxPlacementTest("October campaign", options,  // name: at most 64 characters
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+ListInboxPlacementTestsOptions filters;
+filters.status = std::string("finished");
+filters.page = 1;
+filters.pageSize = 25;
+zb->listInboxPlacementTests(filters, onSuccess, onError);
+
+zb->getInboxPlacementTest("123", onSuccess, onError);
+zb->setInboxPlacementWebhook("https://example.com/ipt-webhook", onSuccess, onError);
+zb->getInboxPlacementWebhook(onSuccess, onError);
+zb->deleteInboxPlacementTest("123", onSuccess, onError);
+```
+
+## Per-API base URLs
+
+The list evaluator and the Inbox Placement Tester have their own base URLs,
+separate from the main and bulk hosts.
+
+```cpp
+zb->setListEvaluatorBaseUrl("https://bulkapi.zerobounce.net/v2/listevaluator");
+zb->setInboxPlacementBaseUrl("https://bulkapi.zerobounce.net/api/ipt");
+```
+
