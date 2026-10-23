@@ -436,6 +436,44 @@ zb->getInboxPlacementWebhook(onSuccess, onError);
 zb->deleteInboxPlacementTest("123", onSuccess, onError);
 ```
 
+## S3 and SFTP/FTP bulk
+
+Queue a job on a file that already sits in your Amazon S3 bucket, or on your
+SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api)
+and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
+
+```cpp
+auto ok = [](ZBSendFileResponse response) { std::cout << response.toString() << std::endl; };
+auto failed = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
+
+// Amazon S3. fileName is the full path, as returned by listS3files.
+BulkFileJobOptions finder;
+finder.fileName = "lists/leads.csv";
+finder.hasHeaderRow = true;
+zb->emailFinderS3File(finder, ok, failed);
+
+BulkFileJobOptions domains;
+domains.fileName = "lists/leads.csv";
+domains.removeDuplicates = true;
+domains.returnUrl = "https://example.com/zerobounce-done";
+zb->domainSearchS3File(domains, ok, failed);
+
+// SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
+// fileName may be left unset for validateSFTPFile alone, which then uses the
+// input bucket from those settings.
+BulkFileJobOptions sftp;
+zb->validateSFTPFile(sftp, ok, failed);
+
+sftp.fileName = "my_file.txt";
+zb->scoreSFTPFile(sftp, ok, failed);
+zb->emailFinderSFTPFile(sftp, ok, failed);
+zb->domainSearchSFTPFile(sftp, ok, failed);
+
+// Note the field: this one takes export_path, not export_bucket.
+// std::nullopt uses the export path from your settings.
+zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
+```
+
 ## Per-API base URLs
 
 The list evaluator and the Inbox Placement Tester have their own base URLs,

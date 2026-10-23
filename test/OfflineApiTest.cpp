@@ -832,6 +832,110 @@ TEST(OfflineApi, Priority3EndpointsAndZeroColumn) {
 
 }
 
+TEST(OfflineApi, S3AndSftpFileJobsSendTheDocumentedFieldsOnly) {
+    FakeApi api;
+    OfflineClient client(api, "p3-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+
+    BulkFileJobOptions finder;
+    finder.fileName = "lists/leads.csv";
+    finder.hasHeaderRow = true;
+    client.emailFinderS3File(finder, [&](ZBSendFileResponse) {}, fail);
+    auto found = onlyRequest(api);
+    EXPECT_EQ(found.method, "POST");
+    EXPECT_EQ(found.path, "/emailFinderS3file");
+    EXPECT_EQ(found.fields["file_name"], "lists/leads.csv");
+    // Booleans go on the wire as the strings "true"/"false".
+    EXPECT_EQ(found.fields["has_header_row"], "true");
+    // Unset options stay off the request entirely.
+    EXPECT_EQ(found.fields.count("remove_duplicates"), 0u);
+    EXPECT_EQ(found.fields.count("return_url"), 0u);
+
+    api.clear();
+    BulkFileJobOptions domains;
+    domains.fileName = "lists/leads.csv";
+    domains.hasHeaderRow = false;
+    domains.removeDuplicates = true;
+    domains.returnUrl = "https://example.com/done";
+    client.domainSearchS3File(domains, [&](ZBSendFileResponse) {}, fail);
+    auto searched = onlyRequest(api);
+    EXPECT_EQ(searched.path, "/domainSearchS3file");
+    EXPECT_EQ(searched.fields["has_header_row"], "false");
+    EXPECT_EQ(searched.fields["remove_duplicates"], "true");
+    EXPECT_EQ(searched.fields["return_url"], "https://example.com/done");
+
+    // file_name is optional for validateSFTPfile alone: without it the input
+    // bucket from the account's settings is used.
+    api.clear();
+    BulkFileJobOptions sftpDefaults;
+    client.validateSFTPFile(sftpDefaults, [&](ZBSendFileResponse) {}, fail);
+    auto validated = onlyRequest(api);
+    EXPECT_EQ(validated.path, "/validateSFTPfile");
+    EXPECT_EQ(validated.fields.count("file_name"), 0u);
+    EXPECT_EQ(validated.fields["has_header_row"], "true");
+
+    api.clear();
+    BulkFileJobOptions named;
+    named.fileName = "my_file.txt";
+    client.validateSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).fields["file_name"], "my_file.txt");
+
+    api.clear();
+    client.scoreSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).path, "/scoreSFTPfile");
+
+    api.clear();
+    client.emailFinderSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).path, "/emailFinderSFTPfile");
+
+    api.clear();
+    client.domainSearchSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).path, "/domainSearchSFTPfile");
+
+    // exportSFTPfile takes export_path, not the export_bucket exportS3file uses.
+    api.clear();
+    client.exportSFTPFile("fid", std::string("/exports"), [&](ZBSendFileResponse) {}, fail);
+    auto exportedSftp = onlyRequest(api);
+    EXPECT_EQ(exportedSftp.path, "/exportSFTPfile");
+    EXPECT_EQ(exportedSftp.fields["file_id"], "fid");
+    EXPECT_EQ(exportedSftp.fields["export_path"], "/exports");
+    EXPECT_EQ(exportedSftp.fields.count("export_bucket"), 0u);
+
+    api.clear();
+    client.exportSFTPFile("fid", std::nullopt, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).fields.count("export_path"), 0u);
+}
+
+TEST(OfflineApi, S3AndSftpFileJobsRejectInvalidArgumentsBeforeRequest) {
+    FakeApi api;
+    OfflineClient client(api, "p3-key");
+    auto succeeded = [&](ZBSendFileResponse) { FAIL() << "success"; };
+    auto expectFileName = [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("file_name"), std::string::npos);
+    };
+
+    BulkFileJobOptions missing;
+    client.emailFinderS3File(missing, succeeded, expectFileName);
+    client.domainSearchS3File(missing, succeeded, expectFileName);
+    client.scoreSFTPFile(missing, succeeded, expectFileName);
+    client.emailFinderSFTPFile(missing, succeeded, expectFileName);
+    client.domainSearchSFTPFile(missing, succeeded, expectFileName);
+
+    // An unset name is allowed for validateSFTPfile, but a blank one is not.
+    BulkFileJobOptions blank;
+    blank.fileName = "   ";
+    client.validateSFTPFile(blank, succeeded, expectFileName);
+
+    client.exportSFTPFile("  ", std::nullopt, succeeded, [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("file_id"), std::string::npos);
+    });
+    client.exportSFTPFile("fid", std::string(" "), succeeded, [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("export_path"), std::string::npos);
+    });
+
+    EXPECT_EQ(api.size(), 0u);
+}
+
 #endif
 
 TEST(OfflineApi, RejectsMissingKeyAndInvalidArgumentsBeforeRequest) {

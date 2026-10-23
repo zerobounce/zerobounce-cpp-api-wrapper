@@ -736,6 +736,70 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
+        /** Run the email finder on a file in your Amazon S3 bucket (POST /emailFinderS3file). */
+        void emailFinderS3File(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /** Run domain search on a file in your Amazon S3 bucket (POST /domainSearchS3file). */
+        void domainSearchS3File(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        // SFTP/FTP bulk. The server, path and protocol are never sent by the SDK;
+        // they come from your ZeroBounce settings.
+
+        /**
+         * Validate a file from your SFTP/FTP server (POST /validateSFTPfile).
+         *
+         * This is the one job whose `file_name` the docs list as optional: leave
+         * `options.fileName` unset to use the input bucket from your settings.
+         */
+        void validateSFTPFile(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /** Score a file from your SFTP/FTP server (POST /scoreSFTPfile). */
+        void scoreSFTPFile(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /** Run the email finder on a file from your SFTP/FTP server (POST /emailFinderSFTPfile). */
+        void emailFinderSFTPFile(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /** Run domain search on a file from your SFTP/FTP server (POST /domainSearchSFTPfile). */
+        void domainSearchSFTPFile(
+            const BulkFileJobOptions& options,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
+        /**
+         * Export a validated or scored file back to your SFTP/FTP server (POST /exportSFTPfile).
+         *
+         * Note the field name: this endpoint takes `export_path`, not the
+         * `export_bucket` that exportS3File uses. Pass an unset `exportPath` to
+         * use the export path from your ZeroBounce settings.
+         */
+        void exportSFTPFile(
+            std::string fileId,
+            std::optional<std::string> exportPath,
+            OnSuccessCallback<ZBSendFileResponse> successCallback,
+            OnErrorCallback errorCallback
+        );
+
         /** Override the list evaluator base URL. */
         void setListEvaluatorBaseUrl(const std::string& url);
 

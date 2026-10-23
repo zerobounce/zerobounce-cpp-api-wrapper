@@ -10,7 +10,7 @@ Guidance for AI coding agents working in this repository.
 
 - `include/ZeroBounce/`: public headers. `ZeroBounce.h` is the client.
 - `src/ZeroBounce.cpp`: validation, bulk file, credits, activity, scoring.
-- `src/Priority3.cpp`: bulk email finder, domain search, list evaluator, filters, S3, and the Inbox Placement Tester.
+- `src/Priority3.cpp`: bulk email finder, domain search, list evaluator, filters, the S3 / SFTP bulk jobs, and the Inbox Placement Tester. The six S3 / SFTP file jobs build their form through `bulkFileJobFields`; two shapes differ from the rest and are easy to get wrong — `validateSFTPFile`'s `fileName` may be unset, and `exportSFTPFile` sends `export_path`, not `export_bucket`.
 - `src/HttpError.cpp`: turns HTTP failures, HTML pages, and empty or non-JSON bodies into a short `ZBErrorResponse`.
 - `test/ZeroBounceTest.cpp`: existing GoogleTest cases with a scripted response.
 - `test/OfflineApiTest.cpp`: offline suite. A fake `BaseRequestHandler` records every request and answers without the network.

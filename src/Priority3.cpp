@@ -450,6 +450,38 @@ void ZeroBounce::deleteFilter(
 }
 
 
+// The documented fields shared by the six S3 / SFTP file jobs. Booleans go on
+// the wire as the strings "true"/"false", and an option the caller left unset
+// is not sent at all.
+static bool bulkFileJobFields(
+    const BulkFileJobOptions& options,
+    bool fileNameRequired,
+    const std::string& apiKey,
+    std::vector<std::pair<std::string, std::string>>& fields,
+    OnErrorCallback errorCallback
+) {
+    const bool blankName = options.fileName.has_value() &&
+        options.fileName->find_first_not_of(" \t\r\n") == std::string::npos;
+    if ((!options.fileName.has_value() && fileNameRequired) || blankName) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+        }
+        return false;
+    }
+    fields.emplace_back("has_header_row", options.hasHeaderRow ? "true" : "false");
+    if (options.fileName.has_value()) {
+        fields.emplace_back("file_name", *options.fileName);
+    }
+    if (options.removeDuplicates.has_value()) {
+        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
+    }
+    if (options.returnUrl.has_value()) {
+        fields.emplace_back("return_url", *options.returnUrl);
+    }
+    fields.emplace_back("api_key", apiKey);
+    return true;
+}
+
 void ZeroBounce::validateS3File(
     const ValidateS3FileOptions& options,
     OnSuccessCallback<ZBSendFileResponse> successCallback,
@@ -575,6 +607,108 @@ void ZeroBounce::exportS3File(
         successCallback,
         errorCallback
     );
+}
+
+void ZeroBounce::emailFinderS3File(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/emailFinderS3file", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::domainSearchS3File(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/domainSearchS3file", fields, successCallback, errorCallback);
+}
+
+// SFTP/FTP bulk. The server, path and protocol come from the account's settings.
+
+void ZeroBounce::validateSFTPFile(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    // The only job whose file_name the docs make optional.
+    if (!bulkFileJobFields(options, false, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/validateSFTPfile", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::scoreSFTPFile(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/scoreSFTPfile", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::emailFinderSFTPFile(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/emailFinderSFTPfile", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::domainSearchSFTPFile(
+    const BulkFileJobOptions& options,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+        return;
+    }
+    postSendFileForm(this, bulkApiRootUrl + "/domainSearchSFTPfile", fields, successCallback, errorCallback);
+}
+
+void ZeroBounce::exportSFTPFile(
+    std::string fileId,
+    std::optional<std::string> exportPath,
+    OnSuccessCallback<ZBSendFileResponse> successCallback,
+    OnErrorCallback errorCallback
+) {
+    if (fileId.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+        }
+        return;
+    }
+    std::vector<std::pair<std::string, std::string>> fields{{"file_id", fileId}};
+    if (exportPath.has_value()) {
+        if (exportPath->find_first_not_of(" \t\r\n") == std::string::npos) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError("Empty parameter: export_path"));
+            }
+            return;
+        }
+        // export_path, not the export_bucket exportS3File sends.
+        fields.emplace_back("export_path", *exportPath);
+    }
+    fields.emplace_back("api_key", apiKey);
+    postSendFileForm(this, bulkApiRootUrl + "/exportSFTPfile", fields, successCallback, errorCallback);
 }
 
 // Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes on
