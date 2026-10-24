@@ -88,6 +88,8 @@ ZBGetApiUsageResponse ZBGetApiUsageResponse::from_json(const json& j) {
     r.subStatusAllowed = getOrDefault<int>(j, "sub_status_allowed", 0);
     r.subStatusGold = getOrDefault<int>(j, "sub_status_gold", 0);
     r.subStatusRoleBasedAcceptAll = getOrDefault<int>(j, "sub_status_role_based_accept_all", 0);
+    r.subStatusLeadingPeriodRemoved = getOrDefault<int>(j, "sub_status_leading_period_removed", 0);
+    r.subStatusAliasAddress = getOrDefault<int>(j, "sub_status_alias_address", 0);
     r.startDate = getOrDefault<std::string>(j, "start_date", "");
     r.endDate = getOrDefault<std::string>(j, "end_date", "");
     r.error = getOrDefault<std::string>(j, "error", "");

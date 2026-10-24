@@ -47,6 +47,10 @@ class ZBGetApiUsageResponse {
         int subStatusAllowed = 0;
         int subStatusGold = 0;
         int subStatusRoleBasedAcceptAll = 0;
+        /// Total emails with a leading period that was removed
+        int subStatusLeadingPeriodRemoved = 0;
+        /// Total number of times the API has a sub status of "alias_address"
+        int subStatusAliasAddress = 0;
         std::string startDate;
         std::string endDate;
         std::string error;

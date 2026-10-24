@@ -31,7 +31,8 @@ enum ZBValidateSubStatus {
     RoleBasedCatchAll,
     Disposable,
     Toxic,
-    AcceptAll
+    AcceptAll,
+    AiAgentMailbox
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(
@@ -61,7 +62,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {ZBValidateSubStatus::RoleBasedCatchAll, "role_based_catch_all"},
         {ZBValidateSubStatus::Disposable, "disposable"},
         {ZBValidateSubStatus::Toxic, "toxic"},
-        {ZBValidateSubStatus::AcceptAll, "accept_all"}
+        {ZBValidateSubStatus::AcceptAll, "accept_all"},
+        {ZBValidateSubStatus::AiAgentMailbox, "ai_agent_mailbox"}
     }
 )
 
