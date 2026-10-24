@@ -51,7 +51,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC include)
 target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr nlohmann_json::nlohmann_json)
 
 enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp)
+add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp)
 target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
 include(GoogleTest)

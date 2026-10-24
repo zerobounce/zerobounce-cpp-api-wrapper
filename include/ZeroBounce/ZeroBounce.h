@@ -151,13 +151,18 @@ class BaseRequestHandler {
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) = 0;
         virtual cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) = 0;
 
-        // PUT and DELETE are only used by the Inbox Placement Tester. They have
-        // defaults rather than being pure so existing subclasses keep compiling.
+        // PUT and DELETE are used by the Inbox Placement Tester and the Warmup
+        // API. They have defaults rather than being pure so existing
+        // subclasses keep compiling.
         virtual cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
             return cpr::Put(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
         }
         virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
             return cpr::Delete(url, header, cpr::Timeout{120000}, cpr::Redirect{false});
+        }
+        // The Warmup API's DELETE /custom-engagement takes a JSON body.
+        virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
+            return cpr::Delete(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
         }
 };
 
