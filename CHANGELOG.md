@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The api-usage response now reads `sub_status_leading_period_removed` and `sub_status_alias_address`, two counters the API returns that were silently discarded.
+
 - `{"success": false}` on an HTTP 200 reaches the error callback instead of the success one. The API answers an unknown bulk file id that way.
 - An error body whose JSON carries `error`, `message`, `error_message`, or `detail` reports that text instead of the raw JSON. `detail` is what the Inbox Placement Tester (Django REST framework) returns.
 
