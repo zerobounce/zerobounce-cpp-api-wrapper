@@ -18,13 +18,16 @@ class MockRequestHandler : public BaseRequestHandler {
 
     protected:
         cpr::Response doGet(const cpr::Url& url) {
+            lastGetUrl = url.str();
             return response;
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
+            lastGetUrl = url.str();
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
             lastPostUrl = url.str();
+            lastPostBody = body.str();
             return response;
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
@@ -37,6 +40,8 @@ class MockRequestHandler : public BaseRequestHandler {
 
     public:
         std::string lastPostUrl;
+        std::string lastPostBody;
+        std::string lastGetUrl;
 
         void setResponse(cpr::Response response) {
             this->response = response;
@@ -313,6 +318,74 @@ TEST_F(Tests, testSingleEmailValidateValid) {
     );
 }
 
+TEST_F(Tests, testSubStatusAiAgentMailboxValid) {
+    std::string responseJson = R"({
+        "address": "agent@example.com",
+        "status": "valid",
+        "sub_status": "ai_agent_mailbox"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "agent@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.status, ZBValidateStatus::Valid);
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::AiAgentMailbox);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testSubStatusAiAgentMailboxCatchAll) {
+    std::string responseJson = R"({
+        "address": "agent@example.com",
+        "status": "catch-all",
+        "sub_status": "ai_agent_mailbox"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "agent@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::AiAgentMailbox);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testUnknownSubStatusFallsBackToNone) {
+    // NLOHMANN_JSON_SERIALIZE_ENUM falls back to the first entry in its map,
+    // which is None, so a sub_status added to the API after this SDK shipped
+    // parses to None instead of throwing.
+    std::string responseJson = R"({
+        "address": "future@example.com",
+        "status": "valid",
+        "sub_status": "some_future_sub_status"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    ZeroBounceTest::getInstance()->validate(
+        "future@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.status, ZBValidateStatus::Valid);
+            ASSERT_EQ(response.subStatus, ZBValidateSubStatus::None);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testSingleEmailValidateWithEmptyIpAddress) {
     std::string responseJson = R"({
         "address": "valid@example.com",
@@ -370,6 +443,32 @@ TEST_F(Tests, testBatchEmailValidateInvalid) {
         },
         [&](ZBErrorResponse errorResponse) {
             ASSERT_EQ(errorResponse, expectedResponse);
+        }
+    );
+}
+
+TEST_F(Tests, testSingleEmailValidateWithOptions) {
+    std::string responseJson = R"({"address":"valid@example.com","status":"valid","sub_status":"","processed_at":"2023-04-05 13:29:47.553"})";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBValidateOptions options;
+    options.timeout = 30;
+    options.activityData = true;
+    options.verifyPlus = false;
+
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com",
+        "",
+        options,
+        [&](ZBValidateResponse response) {
+            ASSERT_EQ(response.address, "valid@example.com");
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("timeout=30"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("activity_data=true"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastGetUrl.find("verify_plus=false"), std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
         }
     );
 }
@@ -433,12 +532,19 @@ TEST_F(Tests, testBatchEmailValidateValid) {
 		{"invalid@example.com"}
     };
 
+    ZBValidateOptions batchOptions;
+    batchOptions.timeout = 60;
+    batchOptions.verifyPlus = true;
+
     ZeroBounceTest::getInstance()->validateBatch(
         emails,
+        batchOptions,
         [&](ZBValidateBatchResponse response) {
             ASSERT_EQ(response, expectedResponse);
             ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/validatebatch");
             ASSERT_EQ(mockRequestHandler->lastPostUrl.find("bulkapi"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"timeout\":\"60\""), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"verify_plus\":true"), std::string::npos);
         },
         [&](ZBErrorResponse errorResponse) {
             FAIL() << errorResponse.toString();
@@ -960,6 +1066,49 @@ TEST_F(Tests, testActivityDataValid) {
     );
 }
 
+TEST_F(Tests, testScoreEmailValid) {
+    std::string responseJson = R"({"email":"mark@gmail.com","score":10})";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBScoreEmailResponse expectedResponse = ZBScoreEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->scoreEmail(
+        "mark@gmail.com",
+        [&](ZBScoreEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_TRUE(mockRequestHandler->lastGetUrl.find("/scoring?") != std::string::npos);
+            ASSERT_TRUE(mockRequestHandler->lastGetUrl.find("email=") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testScoreEmailPostValid) {
+    std::string responseJson = R"({"email":"mark@gmail.com","score":10})";
+
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZBScoreEmailResponse expectedResponse = ZBScoreEmailResponse::from_json(json::parse(responseJson));
+
+    ZeroBounceTest::getInstance()->scoreEmailPost(
+        "mark@gmail.com",
+        [&](ZBScoreEmailResponse response) {
+            ASSERT_EQ(response, expectedResponse);
+            ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/scoring");
+            ASSERT_TRUE(mockRequestHandler->lastPostBody.find("api_key=") != std::string::npos);
+            ASSERT_TRUE(mockRequestHandler->lastPostBody.find("email=") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
 TEST_F(Tests, testFindMailStatusInvalid) {
     std::string responseJson = "{\n"
         "    \"email\": \"\",\n"
@@ -1319,3 +1468,50 @@ TEST_F(Tests, testGetCreditsValidResponseButInvalidJsonCallsErrorCallback) {
         }
     );
 }
+
+TEST_F(Tests, testValidateS3FileValid) {
+    std::string responseJson = R"({"success":true,"file_id":"s3-1","message":""})";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ValidateS3FileOptions options;
+    options.fileName = "bucket/key.csv";
+
+    ZeroBounceTest::getInstance()->validateS3File(
+        options,
+        [&](ZBSendFileResponse response) {
+            ASSERT_TRUE(response.success);
+            ASSERT_EQ(response.fileId, "s3-1");
+            ASSERT_TRUE(mockRequestHandler->lastPostUrl.find("/validateS3file") != std::string::npos);
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+
+TEST_F(Tests, testListS3filesValid) {
+    std::string responseJson =
+        R"([{"name":"uploads/list.csv","size":100,"last_modified":"2024-01-01T00:00:00Z"}])";
+    cpr::Response reqResponse = mockResponse(responseJson, 200);
+    mockRequestHandler->setResponse(reqResponse);
+
+    ZeroBounceTest::getInstance()->listS3files(
+        std::string("my-bucket"),
+        std::string("list"),
+        [&](std::vector<ZBS3ListFileEntry> entries) {
+            ASSERT_EQ(entries.size(), 1u);
+            ASSERT_EQ(entries[0].name, "uploads/list.csv");
+            ASSERT_EQ(entries[0].size, 100);
+            ASSERT_EQ(entries[0].lastModified, "2024-01-01T00:00:00Z");
+            ASSERT_EQ(
+                mockRequestHandler->lastGetUrl,
+                "https://bulkapi.zerobounce.net/listS3files?api_key=api-key&bucket=my-bucket&search=list"
+            );
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+}
+

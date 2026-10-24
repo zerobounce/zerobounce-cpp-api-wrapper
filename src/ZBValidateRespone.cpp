@@ -19,6 +19,8 @@ std::string ZBValidateResponse::toString(bool isBatch)
                 ", account='" << account << '\'' <<
                 ", domain='" << domain << '\'' <<
                 ", domainAgeDays='" << domainAgeDays << '\'' <<
+                ", activeInDays='" << activeInDays << '\'' <<
+                ", activeFirstSeen='" << activeFirstSeen << '\'' <<
                 ", smtpProvider='" << smtpProvider << '\'' <<
                 ", catchallDomain=" << (catchallDomain.has_value() ? (catchallDomain.value() ? "true" : "false") : "null") <<
                 ", mxFound=" << mxFound <<
@@ -30,7 +32,10 @@ std::string ZBValidateResponse::toString(bool isBatch)
                 ", region='" << region << '\'' <<
                 ", city='" << city << '\'' <<
                 ", zipCode='" << zipCode << '\'' <<
-                ", processedAt='" << processedAt << '\'';
+                ", processedAt='" << processedAt << '\'' <<
+                ", domainWebsiteExists='" << domainWebsiteExists << '\'' <<
+                ", domainRegistrantCompanyName='" << domainRegistrantCompanyName << '\'' <<
+                ", message='" << message << '\'';
 
     if (!isBatch) {
         stringStream << ", error='" << error << '\'';
@@ -52,6 +57,8 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.account = getOrDefault<std::string>(j, "account", "");
     r.domain = getOrDefault<std::string>(j, "domain", "");
     r.domainAgeDays = getOrDefault<std::string>(j, "domain_age_days", "");
+    r.activeInDays = getOrDefault<std::string>(j, "active_in_days", "");
+    r.activeFirstSeen = getOrDefault<std::string>(j, "active_first_seen", "");
     r.smtpProvider = getOrDefault<std::string>(j, "smtp_provider", "");
 
     if (j.contains("catchall_domain") && !j["catchall_domain"].is_null()) {
@@ -72,6 +79,10 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.city = getOrDefault<std::string>(j, "city", "");
     r.zipCode = getOrDefault<std::string>(j, "zipcode", "");
     r.processedAt = getOrDefault<std::string>(j, "processed_at", "");
+    r.domainWebsiteExists = getOrDefault<std::string>(j, "domain_website_exists", "");
+    r.domainRegistrantCompanyName = getOrDefault<std::string>(j, "domain_registrant_company_name", "");
+    // A greylist pickup that is still running returns "Message" instead of a result.
+    r.message = getOrDefault<std::string>(j, "Message", "");
     r.error = getOrDefault<std::string>(j, "error", "");
 
     return r;
@@ -79,12 +90,14 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
 
 bool ZBValidateResponse::operator==(const ZBValidateResponse& other) const {
     return address == other.address &&
-        status == other.status;
-        subStatus == other.subStatus;
+        status == other.status &&
+        subStatus == other.subStatus &&
         account == other.account &&
         domain == other.domain &&
         didYouMean == other.didYouMean &&
         domainAgeDays == other.domainAgeDays &&
+        activeInDays == other.activeInDays &&
+        activeFirstSeen == other.activeFirstSeen &&
         freeEmail == other.freeEmail &&
         mxFound == other.mxFound &&
         mxRecord == other.mxRecord &&

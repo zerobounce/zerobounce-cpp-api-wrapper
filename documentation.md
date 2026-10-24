@@ -362,3 +362,107 @@ You should see an output like this
 [==========] 26 tests from 1 test suite ran. (7 ms total)
 [  PASSED  ] 26 tests.
 ```
+
+## Validate options
+
+```cpp
+ZBValidateOptions options;
+// domainInfo adds domainWebsiteExists and domainRegistrantCompanyName.
+options.domainInfo = true;
+// greylistProcessing re-runs a greylisted address instead of returning unknown.
+options.greylistProcessing = true;
+// callbackUrl is only allowed together with greylistProcessing = true.
+options.callbackUrl = std::string("https://example.com/zerobounce-callback");
+
+zb->validate("someone@example.com", "", options,
+    [](ZBValidateResponse response) {
+        // While the greylist retry is still running the API returns a message
+        // instead of a result; validate again in about 30 minutes.
+        std::cout << response.message << " " << response.domainWebsiteExists << std::endl;
+    },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+```
+
+## Inbox Placement Tester
+
+Lives on `https://bulkapi.zerobounce.net/api/ipt` and spends inbox test credits.
+
+```cpp
+zb->getInboxPlacementProviders(
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+// testType 1 (Email) needs senderEmail; 2 is Unique ID and 3 is Auto Alias.
+CreateInboxPlacementTestOptions options;
+options.testType = 1;
+options.senderEmail = std::string("news@example.com");
+options.providers = std::vector<InboxPlacementProviderSelection>{{1, 5}};
+options.webhookUrl = std::string("https://example.com/ipt-webhook");
+
+zb->createInboxPlacementTest("October campaign", options,  // name: at most 64 characters
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+ListInboxPlacementTestsOptions filters;
+filters.status = std::string("finished");
+filters.page = 1;
+filters.pageSize = 25;
+zb->listInboxPlacementTests(filters, onSuccess, onError);
+
+zb->getInboxPlacementTest("123", onSuccess, onError);
+zb->setInboxPlacementWebhook("https://example.com/ipt-webhook", onSuccess, onError);
+zb->getInboxPlacementWebhook(onSuccess, onError);
+zb->deleteInboxPlacementTest("123", onSuccess, onError);
+```
+
+## S3 and SFTP/FTP bulk
+
+Queue a job on a file that already sits in your Amazon S3 bucket, or on your
+SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api)
+and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
+
+```cpp
+auto ok = [](ZBSendFileResponse response) { std::cout << response.toString() << std::endl; };
+auto failed = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
+
+// Amazon S3. fileName is the full path, as returned by listS3files.
+BulkFileJobOptions finder;
+finder.fileName = "lists/leads.csv";
+finder.hasHeaderRow = true;
+zb->emailFinderS3File(finder, ok, failed);
+
+BulkFileJobOptions domains;
+domains.fileName = "lists/leads.csv";
+domains.removeDuplicates = true;
+domains.returnUrl = "https://example.com/zerobounce-done";
+zb->domainSearchS3File(domains, ok, failed);
+
+// SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
+// fileName may be left unset for validateSFTPFile alone, which then uses the
+// input bucket from those settings.
+BulkFileJobOptions sftp;
+zb->validateSFTPFile(sftp, ok, failed);
+
+sftp.fileName = "my_file.txt";
+zb->scoreSFTPFile(sftp, ok, failed);
+zb->emailFinderSFTPFile(sftp, ok, failed);
+zb->domainSearchSFTPFile(sftp, ok, failed);
+
+// Note the field: this one takes export_path, not export_bucket.
+// std::nullopt uses the export path from your settings.
+zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
+```
+
+## Per-API base URLs
+
+The list evaluator and the Inbox Placement Tester have their own base URLs,
+separate from the main and bulk hosts.
+
+```cpp
+zb->setListEvaluatorBaseUrl("https://bulkapi.zerobounce.net/v2/listevaluator");
+zb->setInboxPlacementBaseUrl("https://bulkapi.zerobounce.net/api/ipt");
+```
+

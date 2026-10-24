@@ -22,12 +22,21 @@ class ZBErrorResponse {
         bool success = false;
         std::vector<std::string> errors;
 
+        /**
+         * The HTTP status of the failed response, or 0 when the failure never
+         * reached the API. It lets callers tell a 403 from Cloudflare apart
+         * from a 400/404 from the API and a 429 from the Warmup rate limit.
+         */
+        long statusCode = 0;
+
         ZBErrorResponse();
         ZBErrorResponse(bool success, std::vector<std::string> errors);
+        ZBErrorResponse(bool success, std::vector<std::string> errors, long statusCode);
 
         std::string toString();
 
         static ZBErrorResponse parseError(std::string error);
+        static ZBErrorResponse parseError(std::string error, long statusCode);
 
         bool operator==(const ZBErrorResponse& other) const;
 };

@@ -380,3 +380,171 @@ You should see an output like this
 2. **Actions → Publish → Run workflow** with that tag.
 
 No package registry — GitHub release only. Pin the tag in FetchContent or as a submodule.
+
+## Validate options
+
+```cpp
+ZBValidateOptions options;
+// domainInfo adds domainWebsiteExists and domainRegistrantCompanyName.
+options.domainInfo = true;
+// greylistProcessing re-runs a greylisted address instead of returning unknown.
+options.greylistProcessing = true;
+// callbackUrl is only allowed together with greylistProcessing = true.
+options.callbackUrl = std::string("https://example.com/zerobounce-callback");
+
+zb->validate("someone@example.com", "", options,
+    [](ZBValidateResponse response) {
+        // While the greylist retry is still running the API returns a message
+        // instead of a result; validate again in about 30 minutes.
+        std::cout << response.message << " " << response.domainWebsiteExists << std::endl;
+    },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+```
+
+## Inbox Placement Tester
+
+Lives on `https://bulkapi.zerobounce.net/api/ipt`, authenticates with an
+`Authorization: Bearer` header, and spends inbox test credits.
+
+```cpp
+zb->getInboxPlacementProviders(
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+// testType 1 (Email) needs senderEmail; 2 is Unique ID and 3 is Auto Alias.
+CreateInboxPlacementTestOptions options;
+options.testType = 1;
+options.senderEmail = std::string("news@example.com");
+options.providers = std::vector<InboxPlacementProviderSelection>{{1, 5}};
+options.webhookUrl = std::string("https://example.com/ipt-webhook");
+
+zb->createInboxPlacementTest("October campaign", options,  // name: at most 64 characters
+    [](std::string json) { std::cout << json << std::endl; },
+    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
+);
+
+ListInboxPlacementTestsOptions filters;
+filters.status = std::string("finished");
+filters.page = 1;
+filters.pageSize = 25;
+zb->listInboxPlacementTests(filters, onSuccess, onError);
+
+zb->getInboxPlacementTest("123", onSuccess, onError);
+zb->setInboxPlacementWebhook("https://example.com/ipt-webhook", onSuccess, onError);
+zb->getInboxPlacementWebhook(onSuccess, onError);
+zb->deleteInboxPlacementTest("123", onSuccess, onError);
+```
+
+## S3 and SFTP/FTP bulk
+
+Queue a job on a file that already sits in your Amazon S3 bucket, or on your
+SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api)
+and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
+
+```cpp
+auto ok = [](ZBSendFileResponse response) { std::cout << response.toString() << std::endl; };
+auto failed = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
+
+// Amazon S3. fileName is the full path, as returned by listS3files.
+// fileName and returnUrl are required on every one of these jobs.
+BulkFileJobOptions finder;
+finder.fileName = "lists/leads.csv";
+finder.hasHeaderRow = true;
+finder.returnUrl = "https://example.com/zerobounce-done";
+zb->emailFinderS3File(finder, ok, failed);
+
+BulkFileJobOptions domains = finder;
+domains.removeDuplicates = true;
+zb->domainSearchS3File(domains, ok, failed);
+
+// SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
+// The docs list fileName as optional for validateSFTPFile, but the live API
+// requires it there too.
+BulkFileJobOptions sftp;
+sftp.fileName = "my_file.txt";
+sftp.returnUrl = "https://example.com/zerobounce-done";
+zb->validateSFTPFile(sftp, ok, failed);
+zb->scoreSFTPFile(sftp, ok, failed);
+zb->emailFinderSFTPFile(sftp, ok, failed);
+zb->domainSearchSFTPFile(sftp, ok, failed);
+
+// Note the field: this one takes export_path, not export_bucket.
+// std::nullopt uses the export path from your settings.
+zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
+```
+
+## Warmup API
+
+The Warmup API is a separate product. It has its own host, its own team-scoped key, and its own client; your validation key will not work with it.
+
+```cpp
+#include "ZeroBounce/ZeroBounceWarmup.h"
+
+ZeroBounceWarmup warmup;
+warmup.initialize("<YOUR_WARMUP_API_KEY>");
+
+warmup.listSendingAccounts(onSuccess, onError);
+warmup.getProgressToday(onSuccess, onError);
+warmup.downloadSeeds(
+    [](std::string csv) { std::cout << csv << std::endl; },  // columns seed,provider
+    onError);
+```
+
+Add a from-address you run yourself, with one of the five standard engagement rules (0 Default, 1 Slow Pace, 2 Repair, 3 Boost, 4 Protect):
+
+```cpp
+WarmupAddSendingAccountOptions options;
+options.engagementRuleId = 0;
+warmup.addSendingAccount("sender@example.com", "self_managed", options, onSuccess, onError);
+```
+
+A custom engagement rule can be changed only once every seven days; inside that window the API answers 429.
+
+```cpp
+warmup.createCustomEngagement("sender@example.com", 20, 20, 35, onSuccess, onError);  // reply, important, click %
+```
+
+`checkDomainDmarc` takes an **email address**, not a domain — the live API rejects a bare domain even though the docs describe one:
+
+```cpp
+warmup.checkDomainDmarc("sender@example.com", std::nullopt, onSuccess, onError);
+```
+
+Every documented empty success (204, or an empty 200) arrives as the JSON text `null`. Failures carry the HTTP status on `ZBErrorResponse::statusCode`. Nothing is stored by `testSmtpConfiguration`, and the credentials you pass it are masked out of any error it raises.
+
+## Live API suite
+
+A normal build never compiles it and `ctest` never runs it: the live suite is its own executable, built only when you ask for it. It needs real keys, which come from the environment and are never written anywhere:
+
+```bash
+cmake -S . -B build -DZEROBOUNCE_BUILD_LIVE_TESTS=ON
+cmake --build build --target ZeroBounceLiveApi
+
+export ZEROBOUNCE_API_KEY=...          # validation API
+export ZEROBOUNCE_WARMUP_API_KEY=...   # Warmup API
+./build/bin/ZeroBounceLiveApi
+```
+
+By default it only makes free calls: sandbox addresses, reads, and requests that are expected to fail but still prove the API accepts the payload. It checks that the credit balance did not move. Two flags opt in to more:
+
+| Flag | What it adds |
+| --- | --- |
+| `ZEROBOUNCE_LIVE_SPEND=1` | billable calls (scoring, activity, email finder) and a bulk round trip that deletes its own job |
+| `ZEROBOUNCE_LIVE_CHANGES=1` | reversible account changes — a test filter and a self-managed Warmup sending account — each undone in cleanup even when a check fails |
+
+It never creates an Inbox Placement test, sets the Inbox Placement webhook, or starts ZB-managed Warmup onboarding, because the API cannot undo any of those.
+
+Run it by hand before every release: the offline suite proves the SDK sends what we think it sends, and only the live suite proves the API accepts it.
+
+## Per-API base URLs
+
+The list evaluator and the Inbox Placement Tester have their own base URLs,
+separate from the main and bulk hosts.
+
+```cpp
+zb->setListEvaluatorBaseUrl("https://bulkapi.zerobounce.net/v2/listevaluator");
+zb->setInboxPlacementBaseUrl("https://bulkapi.zerobounce.net/api/ipt");
+```
+
