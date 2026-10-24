@@ -355,7 +355,10 @@ void ZeroBounce::validateBatch(
         }
 
         if (options.timeout.has_value()) {
-            payload["timeout"] = options.timeout.value();
+            // LIVE: validatebatch takes timeout as a JSON *string*. Sent as a
+            // number the API rejects the whole batch with the account-level
+            // "Invalid API Key or your account ran out of credits".
+            payload["timeout"] = std::to_string(options.timeout.value());
         }
         if (options.activityData.has_value()) {
             payload["activity_data"] = options.activityData.value();

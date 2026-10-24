@@ -543,7 +543,7 @@ TEST_F(Tests, testBatchEmailValidateValid) {
             ASSERT_EQ(response, expectedResponse);
             ASSERT_EQ(mockRequestHandler->lastPostUrl, "https://api.zerobounce.net/v2/validatebatch");
             ASSERT_EQ(mockRequestHandler->lastPostUrl.find("bulkapi"), std::string::npos);
-            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"timeout\":60"), std::string::npos);
+            ASSERT_NE(mockRequestHandler->lastPostBody.find("\"timeout\":\"60\""), std::string::npos);
             ASSERT_NE(mockRequestHandler->lastPostBody.find("\"verify_plus\":true"), std::string::npos);
         },
         [&](ZBErrorResponse errorResponse) {

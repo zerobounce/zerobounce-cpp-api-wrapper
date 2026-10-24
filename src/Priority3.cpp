@@ -402,11 +402,29 @@ void ZeroBounce::getListEvaluatorResult(
 }
 
 void ZeroBounce::sendEvaluatedFile(
-    std::string filePath,
+    std::string fileId,
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    bulkRootMultipart(this, bulkApiBaseUrl + "/send-evaluated-file/", filePath, {}, successCallback, errorCallback);
+    if (!requireApiKey(this, errorCallback)) {
+        return;
+    }
+    if (fileId.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+        }
+        return;
+    }
+    // LIVE: this takes the list evaluator's file_id as a form field, not the
+    // file upload the docs describe - an upload is rejected with
+    // "file_id: This field is required".
+    postSendFileForm(
+        this,
+        bulkApiBaseUrl + "/send-evaluated-file/",
+        {{"api_key", apiKey}, {"file_id", fileId}},
+        successCallback,
+        errorCallback
+    );
 }
 
 void ZeroBounce::addFilter(
@@ -453,30 +471,36 @@ void ZeroBounce::deleteFilter(
 // The documented fields shared by the six S3 / SFTP file jobs. Booleans go on
 // the wire as the strings "true"/"false", and an option the caller left unset
 // is not sent at all.
+// LIVE: file_name and return_url are required on every one of these jobs,
+// validateSFTPfile included, although the docs list file_name as optional for
+// that one. Without either the API answers "This field is required".
 static bool bulkFileJobFields(
     const BulkFileJobOptions& options,
-    bool fileNameRequired,
     const std::string& apiKey,
     std::vector<std::pair<std::string, std::string>>& fields,
     OnErrorCallback errorCallback
 ) {
-    const bool blankName = options.fileName.has_value() &&
+    const bool blankName = !options.fileName.has_value() ||
         options.fileName->find_first_not_of(" \t\r\n") == std::string::npos;
-    if ((!options.fileName.has_value() && fileNameRequired) || blankName) {
+    if (blankName) {
         if (errorCallback) {
             errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
         }
         return false;
     }
-    fields.emplace_back("has_header_row", options.hasHeaderRow ? "true" : "false");
-    if (options.fileName.has_value()) {
-        fields.emplace_back("file_name", *options.fileName);
+    const bool blankReturnUrl = !options.returnUrl.has_value() ||
+        options.returnUrl->find_first_not_of(" \t\r\n") == std::string::npos;
+    if (blankReturnUrl) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: return_url"));
+        }
+        return false;
     }
+    fields.emplace_back("has_header_row", options.hasHeaderRow ? "true" : "false");
+    fields.emplace_back("file_name", *options.fileName);
+    fields.emplace_back("return_url", *options.returnUrl);
     if (options.removeDuplicates.has_value()) {
         fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
-    }
-    if (options.returnUrl.has_value()) {
-        fields.emplace_back("return_url", *options.returnUrl);
     }
     fields.emplace_back("api_key", apiKey);
     return true;
@@ -615,7 +639,7 @@ void ZeroBounce::emailFinderS3File(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/emailFinderS3file", fields, successCallback, errorCallback);
@@ -627,7 +651,7 @@ void ZeroBounce::domainSearchS3File(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/domainSearchS3file", fields, successCallback, errorCallback);
@@ -641,8 +665,7 @@ void ZeroBounce::validateSFTPFile(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    // The only job whose file_name the docs make optional.
-    if (!bulkFileJobFields(options, false, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/validateSFTPfile", fields, successCallback, errorCallback);
@@ -654,7 +677,7 @@ void ZeroBounce::scoreSFTPFile(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/scoreSFTPfile", fields, successCallback, errorCallback);
@@ -666,7 +689,7 @@ void ZeroBounce::emailFinderSFTPFile(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/emailFinderSFTPfile", fields, successCallback, errorCallback);
@@ -678,7 +701,7 @@ void ZeroBounce::domainSearchSFTPFile(
     OnErrorCallback errorCallback
 ) {
     std::vector<std::pair<std::string, std::string>> fields;
-    if (!bulkFileJobFields(options, true, apiKey, fields, errorCallback)) {
+    if (!bulkFileJobFields(options, apiKey, fields, errorCallback)) {
         return;
     }
     postSendFileForm(this, bulkApiRootUrl + "/domainSearchSFTPfile", fields, successCallback, errorCallback);
@@ -741,29 +764,40 @@ void iptRequest(
     if (!requireApiKey(zb, errorCallback)) {
         return;
     }
+    // LIVE: the Inbox Placement Tester authenticates with a Bearer header.
+    // Sent as an api_key parameter the request is rejected as unauthorized.
+    const std::string bearer = "Bearer " + zb->getApiKey();
     try {
         cpr::Response reqResponse;
         if (method == "POST") {
             reqResponse = zb->getRequestHandler()->Post(
                 cpr::Url{url},
-                cpr::Header{{"Accept", "application/json"}, {"Content-Type", "application/json"}},
+                cpr::Header{
+                    {"Accept", "application/json"},
+                    {"Content-Type", "application/json"},
+                    {"Authorization", bearer}
+                },
                 cpr::Body{jsonBody ? *jsonBody : std::string{}}
             );
         } else if (method == "PUT") {
             reqResponse = zb->getRequestHandler()->Put(
                 cpr::Url{url},
-                cpr::Header{{"Accept", "application/json"}, {"Content-Type", "application/json"}},
+                cpr::Header{
+                    {"Accept", "application/json"},
+                    {"Content-Type", "application/json"},
+                    {"Authorization", bearer}
+                },
                 cpr::Body{jsonBody ? *jsonBody : std::string{}}
             );
         } else if (method == "DELETE") {
             reqResponse = zb->getRequestHandler()->Delete(
                 cpr::Url{url},
-                cpr::Header{{"Accept", "application/json"}}
+                cpr::Header{{"Accept", "application/json"}, {"Authorization", bearer}}
             );
         } else {
             reqResponse = zb->getRequestHandler()->Get(
                 cpr::Url{url},
-                cpr::Header{{"Accept", "application/json"}}
+                cpr::Header{{"Accept", "application/json"}, {"Authorization", bearer}}
             );
         }
         json parsed;
@@ -795,7 +829,7 @@ void ZeroBounce::getInboxPlacementProviders(
     OnErrorCallback errorCallback
 ) {
     iptRequest(this, "GET",
-        inboxPlacementBaseUrl + "/providers?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/providers",
         nullptr, successCallback, errorCallback);
 }
 
@@ -804,7 +838,7 @@ void ZeroBounce::getInboxPlacementTestTypes(
     OnErrorCallback errorCallback
 ) {
     iptRequest(this, "GET",
-        inboxPlacementBaseUrl + "/test-types?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/test-types",
         nullptr, successCallback, errorCallback);
 }
 
@@ -874,7 +908,7 @@ void ZeroBounce::createInboxPlacementTest(
 
     std::string encoded = body.dump();
     iptRequest(this, "POST",
-        inboxPlacementBaseUrl + "/test?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/test",
         &encoded, successCallback, errorCallback);
 }
 
@@ -886,7 +920,7 @@ void ZeroBounce::getInboxPlacementTest(
     std::string path;
     if (!iptTestPath(testId, path, errorCallback)) return;
     iptRequest(this, "GET",
-        inboxPlacementBaseUrl + "/test/" + path + "?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/test/" + path,
         nullptr, successCallback, errorCallback);
 }
 
@@ -916,12 +950,19 @@ void ZeroBounce::listInboxPlacementTests(
         return;
     }
 
-    std::string url = inboxPlacementBaseUrl + "/tests?api_key=" + p3UrlEncode(apiKey);
-    if (options.status.has_value()) url += "&status=" + p3UrlEncode(options.status.value());
-    if (options.createdAfter.has_value()) url += "&createdAfter=" + p3UrlEncode(options.createdAfter.value());
-    if (options.createdBefore.has_value()) url += "&createdBefore=" + p3UrlEncode(options.createdBefore.value());
-    if (options.page.has_value()) url += "&page=" + std::to_string(options.page.value());
-    if (options.pageSize.has_value()) url += "&page_size=" + std::to_string(options.pageSize.value());
+    // The listing is GET /tests (plural); /test is the single-test path and
+    // answers "Method \"GET\" not allowed".
+    std::string url = inboxPlacementBaseUrl + "/tests";
+    std::string separator = "?";
+    auto addParam = [&url, &separator](const std::string& name, const std::string& value) {
+        url += separator + name + "=" + value;
+        separator = "&";
+    };
+    if (options.status.has_value()) addParam("status", p3UrlEncode(options.status.value()));
+    if (options.createdAfter.has_value()) addParam("createdAfter", p3UrlEncode(options.createdAfter.value()));
+    if (options.createdBefore.has_value()) addParam("createdBefore", p3UrlEncode(options.createdBefore.value()));
+    if (options.page.has_value()) addParam("page", std::to_string(options.page.value()));
+    if (options.pageSize.has_value()) addParam("page_size", std::to_string(options.pageSize.value()));
     iptRequest(this, "GET", url, nullptr, successCallback, errorCallback);
 }
 
@@ -933,7 +974,7 @@ void ZeroBounce::deleteInboxPlacementTest(
     std::string path;
     if (!iptTestPath(testId, path, errorCallback)) return;
     iptRequest(this, "DELETE",
-        inboxPlacementBaseUrl + "/test/" + path + "?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/test/" + path,
         nullptr, successCallback, errorCallback);
 }
 
@@ -942,7 +983,7 @@ void ZeroBounce::getInboxPlacementWebhook(
     OnErrorCallback errorCallback
 ) {
     iptRequest(this, "GET",
-        inboxPlacementBaseUrl + "/webhook?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/webhook",
         nullptr, successCallback, errorCallback);
 }
 
@@ -959,6 +1000,6 @@ void ZeroBounce::setInboxPlacementWebhook(
     body["webhookUrl"] = webhookUrl;
     std::string encoded = body.dump();
     iptRequest(this, "PUT",
-        inboxPlacementBaseUrl + "/webhook?api_key=" + p3UrlEncode(apiKey),
+        inboxPlacementBaseUrl + "/webhook",
         &encoded, successCallback, errorCallback);
 }

@@ -11,6 +11,9 @@ ZBErrorResponse::ZBErrorResponse() {}
 ZBErrorResponse::ZBErrorResponse(bool success, std::vector<std::string> errors) :
         success(success), errors(errors) {}
 
+ZBErrorResponse::ZBErrorResponse(bool success, std::vector<std::string> errors, long statusCode) :
+        success(success), errors(errors), statusCode(statusCode) {}
+
 std::string ZBErrorResponse::toString()
 {
     std::stringstream stringStream;
@@ -25,7 +28,7 @@ std::string ZBErrorResponse::toString()
         }
     }
 
-    stringStream << "]}";
+    stringStream << "], statusCode=" << statusCode << "}";
 
     return stringStream.str();
 }
@@ -69,6 +72,12 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
     }
 
     response.errors = errors;
+    return response;
+}
+
+ZBErrorResponse ZBErrorResponse::parseError(std::string error, long statusCode) {
+    ZBErrorResponse response = parseError(std::move(error));
+    response.statusCode = statusCode;
     return response;
 }
 

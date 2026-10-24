@@ -682,8 +682,14 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
+        /**
+         * Submit a finished evaluation for validation.
+         *
+         * LIVE: this takes the list evaluator's file_id as a form field, not a
+         * file upload as the docs describe.
+         */
         void sendEvaluatedFile(
-            std::string filePath,
+            std::string fileId,
             OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );

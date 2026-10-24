@@ -22,6 +22,8 @@ struct RecordedRequest {
     std::string host;
     std::string path;
     std::string apiKey;
+    /// The Authorization header, for the Inbox Placement Tester's Bearer key.
+    std::string authorization;
     std::map<std::string, std::string> fields;
     /// The full request URL, for assertions on path encoding and query order.
     std::string url;
@@ -160,36 +162,36 @@ public:
     }
 
 protected:
-    cpr::Response doGet(const cpr::Url& url) override { return respond("GET", url.str(), {}, ""); }
+    cpr::Response doGet(const cpr::Url& url) override { return respond("GET", url.str(), {}, "", {}); }
 
-    cpr::Response doGet(const cpr::Url& url, const cpr::Header&) override {
-        return respond("GET", url.str(), {}, "");
+    cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) override {
+        return respond("GET", url.str(), {}, "", header);
     }
 
     cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) override {
         cpr::CurlHolder holder;
         std::string query = parameters.GetContent(holder);
-        return respond("GET", url.str(), {}, query);
+        return respond("GET", url.str(), {}, query, {});
     }
 
-    cpr::Response doPost(const cpr::Url& url, const cpr::Header&, const cpr::Body& body) override {
-        return respond("POST", url.str(), {}, body.str());
+    cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) override {
+        return respond("POST", url.str(), {}, body.str(), header);
     }
 
-    cpr::Response doPut(const cpr::Url& url, const cpr::Header&, const cpr::Body& body) override {
-        return respond("PUT", url.str(), {}, std::string(body));
+    cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) override {
+        return respond("PUT", url.str(), {}, std::string(body), header);
     }
 
-    cpr::Response doDelete(const cpr::Url& url, const cpr::Header&) override {
-        return respond("DELETE", url.str(), {}, "");
+    cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) override {
+        return respond("DELETE", url.str(), {}, "", header);
     }
 
-    cpr::Response doPost(const cpr::Url& url, const cpr::Header&, const cpr::Multipart& multipart) override {
+    cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) override {
         std::map<std::string, std::string> fields;
         for (const auto& part : multipart.parts) {
             fields[part.name] = part.is_file ? "<file>" : part.value;
         }
-        return respond("POST", url.str(), fields, "");
+        return respond("POST", url.str(), fields, "", header);
     }
 
 private:
@@ -197,7 +199,8 @@ private:
         const std::string& method,
         const std::string& url,
         std::map<std::string, std::string> fields,
-        const std::string& extra
+        const std::string& extra,
+        const cpr::Header& header
     ) {
         ParsedUrl parsed = parseUrl(url);
         fields.insert(parsed.query.begin(), parsed.query.end());
@@ -221,8 +224,15 @@ private:
         recorded.fields = fields;
         recorded.url = url;
         recorded.body = extra;
+        auto authIt = header.find("Authorization");
+        recorded.authorization = authIt == header.end() ? "" : authIt->second;
         auto keyIt = fields.find("api_key");
         recorded.apiKey = keyIt == fields.end() ? "" : keyIt->second;
+        // The Inbox Placement Tester authenticates with a Bearer header rather
+        // than an api_key parameter, so the key can arrive either way.
+        if (recorded.apiKey.empty() && recorded.authorization.rfind("Bearer ", 0) == 0) {
+            recorded.apiKey = recorded.authorization.substr(7);
+        }
 
         {
             std::lock_guard<std::mutex> lock(mu_);
@@ -243,6 +253,14 @@ private:
             response.status_code = key.rfind("html-403-", 0) == 0 ? 403 : 200;
             response.text = accessDeniedPage();
             response.header["Content-Type"] = "text/html; charset=UTF-8";
+            return response;
+        }
+        if (key.rfind("success-false-", 0) == 0) {
+            // LIVE: an unknown file id comes back as an HTTP 200 whose body
+            // says the call failed.
+            response.status_code = 200;
+            response.text = R"({"success":false,"message":"File cannot be found."})";
+            response.header["Content-Type"] = "application/json";
             return response;
         }
         if (key.rfind("empty-", 0) == 0) {
@@ -840,6 +858,7 @@ TEST(OfflineApi, S3AndSftpFileJobsSendTheDocumentedFieldsOnly) {
     BulkFileJobOptions finder;
     finder.fileName = "lists/leads.csv";
     finder.hasHeaderRow = true;
+    finder.returnUrl = "https://example.com/done";
     client.emailFinderS3File(finder, [&](ZBSendFileResponse) {}, fail);
     auto found = onlyRequest(api);
     EXPECT_EQ(found.method, "POST");
@@ -847,9 +866,9 @@ TEST(OfflineApi, S3AndSftpFileJobsSendTheDocumentedFieldsOnly) {
     EXPECT_EQ(found.fields["file_name"], "lists/leads.csv");
     // Booleans go on the wire as the strings "true"/"false".
     EXPECT_EQ(found.fields["has_header_row"], "true");
+    EXPECT_EQ(found.fields["return_url"], "https://example.com/done");
     // Unset options stay off the request entirely.
     EXPECT_EQ(found.fields.count("remove_duplicates"), 0u);
-    EXPECT_EQ(found.fields.count("return_url"), 0u);
 
     api.clear();
     BulkFileJobOptions domains;
@@ -864,21 +883,17 @@ TEST(OfflineApi, S3AndSftpFileJobsSendTheDocumentedFieldsOnly) {
     EXPECT_EQ(searched.fields["remove_duplicates"], "true");
     EXPECT_EQ(searched.fields["return_url"], "https://example.com/done");
 
-    // file_name is optional for validateSFTPfile alone: without it the input
-    // bucket from the account's settings is used.
-    api.clear();
-    BulkFileJobOptions sftpDefaults;
-    client.validateSFTPFile(sftpDefaults, [&](ZBSendFileResponse) {}, fail);
-    auto validated = onlyRequest(api);
-    EXPECT_EQ(validated.path, "/validateSFTPfile");
-    EXPECT_EQ(validated.fields.count("file_name"), 0u);
-    EXPECT_EQ(validated.fields["has_header_row"], "true");
-
+    // LIVE: file_name is required here too, although the docs list it as
+    // optional for this one endpoint.
     api.clear();
     BulkFileJobOptions named;
     named.fileName = "my_file.txt";
+    named.returnUrl = "https://example.com/done";
     client.validateSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
-    EXPECT_EQ(onlyRequest(api).fields["file_name"], "my_file.txt");
+    auto validated = onlyRequest(api);
+    EXPECT_EQ(validated.path, "/validateSFTPfile");
+    EXPECT_EQ(validated.fields["file_name"], "my_file.txt");
+    EXPECT_EQ(validated.fields["has_header_row"], "true");
 
     api.clear();
     client.scoreSFTPFile(named, [&](ZBSendFileResponse) {}, fail);
@@ -915,16 +930,30 @@ TEST(OfflineApi, S3AndSftpFileJobsRejectInvalidArgumentsBeforeRequest) {
     };
 
     BulkFileJobOptions missing;
+    missing.returnUrl = "https://example.com/done";
     client.emailFinderS3File(missing, succeeded, expectFileName);
     client.domainSearchS3File(missing, succeeded, expectFileName);
     client.scoreSFTPFile(missing, succeeded, expectFileName);
     client.emailFinderSFTPFile(missing, succeeded, expectFileName);
     client.domainSearchSFTPFile(missing, succeeded, expectFileName);
 
-    // An unset name is allowed for validateSFTPfile, but a blank one is not.
     BulkFileJobOptions blank;
     blank.fileName = "   ";
+    blank.returnUrl = "https://example.com/done";
     client.validateSFTPFile(blank, succeeded, expectFileName);
+
+    // LIVE: return_url is required on every one of these jobs.
+    auto expectReturnUrl = [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("return_url"), std::string::npos);
+    };
+    BulkFileJobOptions noReturnUrl;
+    noReturnUrl.fileName = "f.csv";
+    client.emailFinderS3File(noReturnUrl, succeeded, expectReturnUrl);
+    client.domainSearchS3File(noReturnUrl, succeeded, expectReturnUrl);
+    client.validateSFTPFile(noReturnUrl, succeeded, expectReturnUrl);
+    client.scoreSFTPFile(noReturnUrl, succeeded, expectReturnUrl);
+    client.emailFinderSFTPFile(noReturnUrl, succeeded, expectReturnUrl);
+    client.domainSearchSFTPFile(noReturnUrl, succeeded, expectReturnUrl);
 
     client.exportSFTPFile("  ", std::nullopt, succeeded, [&](ZBErrorResponse error) {
         EXPECT_NE(error.toString().find("file_id"), std::string::npos);
@@ -1219,7 +1248,10 @@ TEST(OfflineApi, InboxPlacementUsesItsOwnHostAndCamelCaseJson) {
     auto providers = onlyRequest(api);
     EXPECT_EQ(providers.method, "GET");
     EXPECT_EQ(providers.path, "/api/ipt/providers");
-    EXPECT_NE(providers.url.find("api_key=ipt-key"), std::string::npos);
+    // LIVE: the Inbox Placement Tester authenticates with a Bearer header, and
+    // the key must not reach the query string, where it would be logged.
+    EXPECT_EQ(providers.authorization, "Bearer ipt-key");
+    EXPECT_EQ(providers.url.find("api_key"), std::string::npos);
 
     api.clear();
     client.getInboxPlacementTestTypes([&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
@@ -1334,6 +1366,24 @@ TEST(OfflineApi, InboxPlacementDetailErrorBecomesTheMessage) {
         EXPECT_NE(error.toString().find("Inbox placement test not found"), std::string::npos);
         EXPECT_LT(error.toString().size(), 500u);
     });
+    EXPECT_TRUE(rejected);
+}
+
+TEST(OfflineApi, SuccessFalseOnAnHttp200IsAnError) {
+    FakeApi api;
+    OfflineClient client(api, "success-false-key");
+
+    // LIVE: the API answers an unknown file id with an HTTP 200 whose body
+    // says success: false.
+    bool rejected = false;
+    client.fileStatus("0d1b7a4e-1111-2222-3333-444455556666",
+        [&](ZBFileStatusResponse) { FAIL() << "success"; },
+        [&](ZBErrorResponse error) {
+            rejected = true;
+            EXPECT_EQ(error.statusCode, 200);
+            EXPECT_NE(error.toString().find("File cannot be found."), std::string::npos);
+            EXPECT_LT(error.toString().size(), 500u);
+        });
     EXPECT_TRUE(rejected);
 }
 

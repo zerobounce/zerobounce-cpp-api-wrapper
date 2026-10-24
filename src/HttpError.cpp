@@ -139,6 +139,22 @@ std::string zbMessageFromBody(const std::string& body, long statusCode) {
     return message;
 }
 
+// Whether a "success" field means failure. The API sends it as a JSON false,
+// "false" or "False" depending on the endpoint.
+static bool zbSuccessMeansFailure(const json& value) {
+    if (value.is_boolean()) {
+        return !value.get<bool>();
+    }
+    if (value.is_string()) {
+        std::string text = value.get<std::string>();
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return trimCopy(text) == "false";
+    }
+    return false;
+}
+
 void zbReportHttpError(
     long statusCode,
     const std::string& body,
@@ -147,7 +163,7 @@ void zbReportHttpError(
     if (!errorCallback) {
         return;
     }
-    errorCallback(ZBErrorResponse::parseError(zbMessageFromBody(body, statusCode)));
+    errorCallback(ZBErrorResponse::parseError(zbMessageFromBody(body, statusCode), statusCode));
 }
 
 bool zbReadJsonResponse(
@@ -162,9 +178,15 @@ bool zbReadJsonResponse(
     }
     try {
         out = json::parse(body);
-        return true;
     } catch (const std::exception&) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
+    // LIVE: {"success": false} on an HTTP 200 is a failure, not a result. The
+    // API answers an unknown bulk file id that way, with a 200.
+    if (out.is_object() && out.contains("success") && zbSuccessMeansFailure(out["success"])) {
+        zbReportHttpError(statusCode, body, errorCallback);
+        return false;
+    }
+    return true;
 }
