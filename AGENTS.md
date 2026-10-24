@@ -26,11 +26,29 @@ ctest --test-dir build --output-on-failure
 
 CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `ctest`. That build is the typecheck.
 
+The live API suite is its own executable and off by default, so neither a
+normal build nor CI compiles it:
+
+```bash
+cmake -S . -B build -DZEROBOUNCE_BUILD_LIVE_TESTS=ON
+cmake --build build --target ZeroBounceLiveApi
+export ZEROBOUNCE_API_KEY=... ZEROBOUNCE_WARMUP_API_KEY=...
+./build/bin/ZeroBounceLiveApi                                   # free calls only
+ZEROBOUNCE_LIVE_SPEND=1 ./build/bin/ZeroBounceLiveApi
+ZEROBOUNCE_LIVE_CHANGES=1 ./build/bin/ZeroBounceLiveApi
+```
+
+Keys come from the environment only. Never write one into a file, a commit, a
+log, a fixture or a message.
+
 ## Conventions
 
 - **Only endpoints documented at https://www.zerobounce.net/docs/.** Do not add a method for an endpoint that the public docs do not describe, even if it exists on the server. Check before concluding something is undocumented: the S3 bulk endpoints live under https://www.zerobounce.net/docs/api-integrations/amazon-s3-bulk-api, not the main API reference.
 - **The list evaluator and the Inbox Placement Tester have their own base URLs** (`listEvaluatorBaseUrl`, `inboxPlacementBaseUrl`, settable via `setListEvaluatorBaseUrl` / `setInboxPlacementBaseUrl`). They are not built from the bulk base, and `sendEvaluatedFile` stays on it.
-- **The Inbox Placement Tester takes the API key as the `api_key` query parameter and JSON bodies with camelCase fields.** Only fields the caller set are sent. Its error bodies use `detail`. It is the only caller of `BaseRequestHandler::Put` and `Delete`, which have default implementations so existing subclasses keep compiling.
+- **Where the live API and the docs disagree, follow the API and say so in a comment at the call site.** The ones found so far: `validatebatch` takes `timeout` as a JSON *string*; the Inbox Placement Tester authenticates with `Authorization: Bearer`, not `api_key`; its listing is `GET /tests`, not `/test`; `send-evaluated-file` takes `file_id` as a form field, not a file upload; the S3 and SFTP jobs require `return_url` and `file_name`, `validateSFTPFile` included; the Warmup `check-domain-dmarc` takes an email address, not a domain; and a failed SMTP login in `test-smtp-configuration` comes back as an HTTP 500.
+- **The Inbox Placement Tester takes the API key as an `Authorization: Bearer` header and JSON bodies with camelCase fields.** Only fields the caller set are sent. Its error bodies use `detail`. It and the Warmup client are the only callers of `BaseRequestHandler::Put` and `Delete`, which have default implementations so existing subclasses keep compiling. The Warmup API's `DELETE /custom-engagement` carries a JSON body, which is why there is a `Delete` overload that takes one.
+- **`{"success": false}` on an HTTP 200 is a failure.** The API answers an unknown bulk file id that way. `zbReadJsonResponse` turns it into an error callback.
+- **`src/ZeroBounceWarmup.cpp` is a separate client for the Warmup API**, a different product with its own host and its own team-scoped key. It is not part of `ZeroBounce`, and it owns a `unique_ptr`, so like `ZeroBounce` it is not copyable.
 
 - **One `ZeroBounce` per API key.** `getInstance()` is a process-wide singleton. Do not reuse it across users or requests. Construct a separate object per key. The offline concurrency test does this.
 - **Column indexes are 1-based.** `SendFileOptions` name, gender, and IP columns default to `0`, and `0` means the field is left out. `ValidateS3FileOptions::emailAddressColumn` is `std::optional<int>`: when it is set, `0` is sent. `sendFile`'s email column is required and is sent as given, including `0`.
@@ -39,7 +57,12 @@ CI (`.github/workflows/sdk_ci.yml`) configures, builds, and runs `ctest`. That b
 - **`allow_phase_2` is validation `sendFile` only**, and only when `allowPhase2IsSet` is true. Scoring `sendFile` ignores it. `activity_data` on get-file is validation only.
 - **`validateBatch` uses `api.zerobounce.net`**, not `bulkapi.zerobounce.net`.
 - **Failures use the error callback**, not exceptions. The message must be short: no raw HTML, no megabyte body, no `[json.exception…]` text, and no `Error: Error:` prefix. An account-level `validateBatch` error (`email_address` `all`) is an error callback. A per-address error stays on the success result.
-- **Tests replace `requestHandler`.** It is `protected`. Subclass `ZeroBounce` in the test and assign a fake. Do not call the live API from the default test run.
+- **Tests replace `requestHandler`.** It is `protected`. Subclass `ZeroBounce` in the test and assign a fake. Do not call the live API from the default test run; `live/live_api.cpp` is the separate, opt-in suite.
+- **Errors carry the HTTP status.** `ZBErrorResponse::statusCode` is set on every failed response, so callers can tell a Cloudflare 403 from an API 400/404 and a Warmup 429. A failure that never reached the API leaves it 0.
+
+## Releasing
+
+**Run the live suite by hand before every release.** The offline suite proves the SDK sends what we think it sends; only the live suite proves the API accepts it. Run it with real keys, including `ZEROBOUNCE_LIVE_SPEND=1` and `ZEROBOUNCE_LIVE_CHANGES=1`, and do not release on a failure.
 - Match the surrounding style. Do not reformat unrelated code.
 
 ## Changelog
