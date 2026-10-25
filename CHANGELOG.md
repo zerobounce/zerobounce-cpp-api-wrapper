@@ -12,18 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `validate` and `validateBatch` take `ZBValidateOptions`: `timeout`, `activityData`, `verifyPlus`, and `usePost` (form-encoded `POST /validate`).
 - `ZBValidateResponse` reads `active_in_days` and `active_first_seen`.
 - `scoreEmail` (`GET /v2/scoring`) and `scoreEmailPost` (form-encoded `POST /v2/scoring`).
-- Bulk email finder (`sendEmailFinderFile`, `emailFinderFileStatus`, `emailFinderGetFile`, `emailFinderDeleteFile`).
+- Bulk email finder (`sendEmailFinderFile`, `emailFinderFileStatus`, `emailFinderGetFile`, `emailFinderDeleteFile`). The upload requires `domain_column` and one of `first_name_column` and `full_name_column`; neither being set is rejected before a request is sent.
 - Bulk domain search (`sendDomainSearchFile`, `domainSearchFileStatus`, `domainSearchGetFile`, `domainSearchDeleteFile`).
 - List evaluator (`sendListEvaluatorFile`, `getListEvaluatorResult`, `sendEvaluatedFile`).
 - Filters (`addFilter`, `listFilters`, `deleteFilter`).
-- S3 bulk (`validateS3File`, `scoreS3File`, `exportS3File`, `listS3files`, `emailFinderS3File`, `domainSearchS3File`).
+- S3 bulk (`validateS3File`, `scoreS3File`, `exportS3File`, `listS3files`, `emailFinderS3File`, `domainSearchS3File`). All six S3 and SFTP/FTP jobs build their form from the same fields, so `validateS3File` and `scoreS3File` require `fileName` and `returnUrl` like the rest; `ValidateS3FileOptions` and `ScoreS3FileOptions` carry `returnUrl` and a plain `bool hasHeaderRow`. `exportS3File` takes an `std::optional<std::string>` bucket: leave it unset to use the export bucket from your ZeroBounce settings.
 - SFTP/FTP bulk: `validateSFTPFile`, `scoreSFTPFile`, `emailFinderSFTPFile`, `domainSearchSFTPFile`, and `exportSFTPFile`, all taking `BulkFileJobOptions`. The server, path and protocol come from your ZeroBounce settings. `validateSFTPFile` is the one job whose `fileName` may be left unset; `exportSFTPFile` takes `export_path` rather than the `export_bucket` `exportS3File` sends.
 - `ZBValidateOptions` accepts `domainInfo`, `greylistProcessing`, and `callbackUrl`. `callbackUrl` needs `greylistProcessing = true` and is rejected without it, and when blank, before a request is sent.
 - `ZBValidateResponse` carries `domainWebsiteExists`, `domainRegistrantCompanyName`, and `message`. `message` is read from the API's `Message` key, returned while greylist processing is still running.
 - Inbox Placement Tester on `https://bulkapi.zerobounce.net/api/ipt`: `getInboxPlacementProviders`, `getInboxPlacementTestTypes`, `createInboxPlacementTest`, `getInboxPlacementTest`, `listInboxPlacementTests`, `deleteInboxPlacementTest`, `getInboxPlacementWebhook`, `setInboxPlacementWebhook`.
-- `setListEvaluatorBaseUrl` and `setInboxPlacementBaseUrl` override those base URLs.
+- `setListEvaluatorBaseUrl`, `setInboxPlacementBaseUrl`, `setBulkApiRootUrl`, `setBulkApiBaseUrl`, and `setBulkApiScoringBaseUrl` override those base URLs. The three bulk hosts were fixed to production and had no setter, so no bulk endpoint could be pointed at a test host.
 - `BaseRequestHandler` gains `Put` and `Delete`, used by the Inbox Placement Tester and the Warmup API, plus a `Delete` overload that carries a body, which the Warmup `DELETE /custom-engagement` needs. All have default implementations, so existing subclasses keep compiling.
-- `ZeroBounceWarmup`, a client for the Warmup API. It is a separate product with its own host (`https://warmup-api.zerobounce.net`), its own team-scoped key sent in an `API-Key` header, and all 26 documented endpoints, including the seed-list and statistics CSV downloads.
+- `ZeroBounceWarmup`, a client for the Warmup API. It is a separate product with its own host (`https://warmup-api.zerobounce.net`), its own team-scoped key sent in an `API-Key` header, and all 26 documented endpoints, including the seed-list and statistics CSV downloads. `isReady()` and `getInitializeError()` report whether `initialize` accepted the key and base URL, and why it did not, instead of leaving the client quietly unusable until the first call.
 - `ZBErrorResponse::statusCode` carries the HTTP status of a failed response, so callers can tell a Cloudflare 403 from an API 400/404 and a Warmup 429.
 - An opt-in live API suite, built only with `-DZEROBOUNCE_BUILD_LIVE_TESTS=ON`. A normal build and CI never compile it, and `ctest` never runs it; it needs keys in the environment, and only spends credits or changes the account behind `ZEROBOUNCE_LIVE_SPEND=1` and `ZEROBOUNCE_LIVE_CHANGES=1`.
 
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `validateBatch` sends `timeout` as a JSON string. Sent as a number, the live API rejects the whole batch with an account-level error.
 - The Inbox Placement Tester authenticates with an `Authorization: Bearer` header instead of an `api_key` parameter, so the key no longer reaches a query string that gets logged, and `listInboxPlacementTests` calls `GET /tests`. `GET /test` answers `Method "GET" not allowed`.
 - `sendEvaluatedFile(fileId)` posts the list evaluator's `file_id` as a form field. The endpoint rejects a file upload with "file_id: This field is required", so it no longer takes a file path.
-- The S3 and SFTP/FTP jobs require `file_name` and `return_url`, `validateSFTPFile` included, although the docs list `file_name` as optional for that one. The API answers "This field is required" otherwise.
+- All six S3 and SFTP/FTP jobs require `file_name` and `return_url`, `validateS3File`, `scoreS3File` and `validateSFTPFile` included, although the docs list them as optional. Without a return URL the API answers `Provided return URL is not permitted: None`, and without a file name, "This field is required". `validateS3File` and `scoreS3File` no longer send the undocumented singular `remove_duplicate` alongside `remove_duplicates`; `remove_duplicate` belongs to the bulk `/v2/sendfile` upload, where `SendFileOptions` still carries it.
 - Query values, including the API key, email, and file id, are percent-encoded.
 
 ### Fixed

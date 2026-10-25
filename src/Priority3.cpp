@@ -216,6 +216,12 @@ void ZeroBounce::sendEmailFinderFile(
         errorCallback(ZBErrorResponse::parseError("Empty parameter: domain_column"));
         return;
     }
+    // The upload needs a name to work from: one of first_name_column and
+    // full_name_column is required, so neither being set is rejected here.
+    if (options == nullptr || (options->firstNameColumn < 1 && options->fullNameColumn < 1)) {
+        errorCallback(ZBErrorResponse::parseError("Empty parameter: first_name_column or full_name_column"));
+        return;
+    }
     bulkRootMultipart(
         this,
         bulkApiRootUrl + "/email-finder/sendfile",
@@ -511,25 +517,20 @@ void ZeroBounce::validateS3File(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (options.fileName.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+    // The shared fields go through the same helper as the other five jobs, so
+    // that what the API requires is stated once. Only the extra fields that
+    // validateS3file alone accepts are added here.
+    BulkFileJobOptions shared;
+    shared.fileName = options.fileName;
+    shared.hasHeaderRow = options.hasHeaderRow;
+    shared.removeDuplicates = options.removeDuplicates;
+    shared.returnUrl = options.returnUrl;
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(shared, apiKey, fields, errorCallback)) {
         return;
-    }
-    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}};
-    if (options.hasHeaderRow.has_value()) {
-        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
-    }
-    if (options.removeDuplicates.has_value()) {
-        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
-    }
-    if (options.removeDuplicate.has_value()) {
-        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
     }
     if (options.emailAddressColumn.has_value()) {
         fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
-    }
-    if (!options.returnUrl.empty()) {
-        fields.emplace_back("return_url", options.returnUrl);
     }
     if (options.firstNameColumn > 0) {
         fields.emplace_back("first_name_column", std::to_string(options.firstNameColumn));
@@ -546,7 +547,6 @@ void ZeroBounce::validateS3File(
     if (options.allowPhase2.has_value()) {
         fields.emplace_back("allow_phase_2", *options.allowPhase2 ? "true" : "false");
     }
-    fields.emplace_back("api_key", apiKey);
     postSendFileForm(this, bulkApiRootUrl + "/validateS3file", fields, successCallback, errorCallback);
 }
 
@@ -555,19 +555,14 @@ void ZeroBounce::scoreS3File(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (options.fileName.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_name"));
+    BulkFileJobOptions shared;
+    shared.fileName = options.fileName;
+    shared.hasHeaderRow = options.hasHeaderRow;
+    shared.removeDuplicates = options.removeDuplicates;
+    shared.returnUrl = options.returnUrl;
+    std::vector<std::pair<std::string, std::string>> fields;
+    if (!bulkFileJobFields(shared, apiKey, fields, errorCallback)) {
         return;
-    }
-    std::vector<std::pair<std::string, std::string>> fields{{"file_name", options.fileName}, {"api_key", apiKey}};
-    if (options.hasHeaderRow.has_value()) {
-        fields.emplace_back("has_header_row", *options.hasHeaderRow ? "true" : "false");
-    }
-    if (options.removeDuplicates.has_value()) {
-        fields.emplace_back("remove_duplicates", *options.removeDuplicates ? "true" : "false");
-    }
-    if (options.removeDuplicate.has_value()) {
-        fields.emplace_back("remove_duplicate", *options.removeDuplicate ? "true" : "false");
     }
     if (options.emailAddressColumn.has_value()) {
         fields.emplace_back("email_address_column", std::to_string(*options.emailAddressColumn));
@@ -612,25 +607,30 @@ void ZeroBounce::listS3files(
 
 void ZeroBounce::exportS3File(
     std::string fileId,
-    std::string exportBucket,
+    std::optional<std::string> exportBucket,
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (fileId.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+    if (fileId.find_first_not_of(" \t\r\n") == std::string::npos) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: file_id"));
+        }
         return;
     }
-    if (exportBucket.empty()) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: export_bucket"));
-        return;
+    std::vector<std::pair<std::string, std::string>> fields{{"file_id", fileId}};
+    // export_bucket is optional: without it the export bucket from your
+    // ZeroBounce settings is used, exactly as exportSFTPFile treats export_path.
+    if (exportBucket.has_value()) {
+        if (exportBucket->find_first_not_of(" \t\r\n") == std::string::npos) {
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError("Empty parameter: export_bucket"));
+            }
+            return;
+        }
+        fields.emplace_back("export_bucket", *exportBucket);
     }
-    postSendFileForm(
-        this,
-        bulkApiRootUrl + "/exportS3file",
-        {{"file_id", fileId}, {"export_bucket", exportBucket}, {"api_key", apiKey}},
-        successCallback,
-        errorCallback
-    );
+    fields.emplace_back("api_key", apiKey);
+    postSendFileForm(this, bulkApiRootUrl + "/exportS3file", fields, successCallback, errorCallback);
 }
 
 void ZeroBounce::emailFinderS3File(
@@ -734,9 +734,10 @@ void ZeroBounce::exportSFTPFile(
     postSendFileForm(this, bulkApiRootUrl + "/exportSFTPfile", fields, successCallback, errorCallback);
 }
 
-// Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes on
-// the query string rather than in the body, and bodies are JSON with camelCase
-// fields. Only fields the caller set are sent.
+// Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). LIVE: the API key
+// goes in an `Authorization: Bearer` header, never on the query string or in
+// the body, and bodies are JSON with camelCase fields. Only fields the caller
+// set are sent.
 
 namespace {
 
@@ -822,6 +823,18 @@ void ZeroBounce::setListEvaluatorBaseUrl(const std::string& url) {
 
 void ZeroBounce::setInboxPlacementBaseUrl(const std::string& url) {
     inboxPlacementBaseUrl = url;
+}
+
+void ZeroBounce::setBulkApiRootUrl(const std::string& url) {
+    bulkApiRootUrl = url;
+}
+
+void ZeroBounce::setBulkApiBaseUrl(const std::string& url) {
+    bulkApiBaseUrl = url;
+}
+
+void ZeroBounce::setBulkApiScoringBaseUrl(const std::string& url) {
+    bulkApiScoringBaseUrl = url;
 }
 
 void ZeroBounce::getInboxPlacementProviders(

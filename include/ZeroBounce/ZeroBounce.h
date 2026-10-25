@@ -198,12 +198,12 @@ class ZeroBounce {
     private:
         std::string apiKey;
         std::string apiBaseUrl = "https://api.zerobounce.net/v2";
-        const std::string bulkApiRootUrl = "https://bulkapi.zerobounce.net";
+        std::string bulkApiRootUrl = "https://bulkapi.zerobounce.net";
         // The list evaluator and the Inbox Placement Tester are not under the bulk /v2 path.
         std::string listEvaluatorBaseUrl = "https://bulkapi.zerobounce.net/v2/listevaluator";
         std::string inboxPlacementBaseUrl = "https://bulkapi.zerobounce.net/api/ipt";
-        const std::string bulkApiBaseUrl = "https://bulkapi.zerobounce.net/v2";
-        const std::string bulkApiScoringBaseUrl = "https://bulkapi.zerobounce.net/v2/scoring";
+        std::string bulkApiBaseUrl = "https://bulkapi.zerobounce.net/v2";
+        std::string bulkApiScoringBaseUrl = "https://bulkapi.zerobounce.net/v2/scoring";
 
         /**
          * Checks if the [apiKey] is invalid or not and if it is, then it throws an error through the provided
@@ -620,6 +620,13 @@ class ZeroBounce {
 
         // Priority 3 — bulk email finder, domain search, list evaluator, filters, S3
 
+        /**
+         * Upload a file for the bulk email finder (POST /email-finder/sendfile).
+         *
+         * `domainColumn` is required, and so is one of `options->firstNameColumn`
+         * and `options->fullNameColumn`: the finder needs a name to work from,
+         * so `options` may not be null and may not leave both unset.
+         */
         void sendEmailFinderFile(
             std::string filePath,
             int domainColumn,
@@ -721,21 +728,39 @@ class ZeroBounce {
             OnErrorCallback errorCallback
         );
 
+        /**
+         * Validate a file in your Amazon S3 bucket (POST /validateS3file).
+         *
+         * Shares the required fields with the other five S3 / SFTP jobs:
+         * `fileName` and `returnUrl` are both required.
+         */
         void validateS3File(
             const ValidateS3FileOptions& options,
             OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
 
+        /**
+         * Score a file in your Amazon S3 bucket (POST /scoreS3file).
+         *
+         * `fileName` and `returnUrl` are both required here too.
+         */
         void scoreS3File(
             const ScoreS3FileOptions& options,
             OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
 
+        /**
+         * Export a validated or scored file back to Amazon S3 (POST /exportS3file).
+         *
+         * `exportBucket` is optional: pass an unset one to use the export
+         * bucket from your ZeroBounce settings, the way exportSFTPFile treats
+         * its `export_path`.
+         */
         void exportS3File(
             std::string fileId,
-            std::string exportBucket,
+            std::optional<std::string> exportBucket,
             OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
@@ -817,8 +842,23 @@ class ZeroBounce {
         /** Override the Inbox Placement Tester base URL. */
         void setInboxPlacementBaseUrl(const std::string& url);
 
-        // Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). The API key goes
-        // on the query string and bodies are JSON with camelCase fields.
+        /**
+         * Override the bulk API root (`https://bulkapi.zerobounce.net`), which
+         * the S3 and SFTP/FTP jobs, the bulk email finder and the bulk domain
+         * search are built from. The list evaluator and the Inbox Placement
+         * Tester are not: they have their own setters.
+         */
+        void setBulkApiRootUrl(const std::string& url);
+
+        /** Override the bulk API base URL (`<root>/v2`) used by bulk validation. */
+        void setBulkApiBaseUrl(const std::string& url);
+
+        /** Override the bulk AI scoring base URL (`<root>/v2/scoring`). */
+        void setBulkApiScoringBaseUrl(const std::string& url);
+
+        // Inbox Placement Tester (bulkapi.zerobounce.net/api/ipt). LIVE: the API
+        // key goes in an `Authorization: Bearer` header, never on the query
+        // string, and bodies are JSON with camelCase fields.
 
         void getInboxPlacementProviders(
             OnRawJsonSuccessCallback successCallback,
