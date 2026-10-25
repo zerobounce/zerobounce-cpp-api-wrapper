@@ -428,25 +428,52 @@ and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
 auto ok = [](ZBSendFileResponse response) { std::cout << response.toString() << std::endl; };
 auto failed = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
 
+// fileName and returnUrl are required on every one of these six jobs. The docs
+// mark them optional; the live API rejects a job without a return URL with
+// "Provided return URL is not permitted: None".
+
 // Amazon S3. fileName is the full path, as returned by listS3files.
+zb->listS3files(std::string("my-bucket"), std::string("leads"),
+    [](std::vector<ZBS3ListFileEntry> files) {
+        for (const auto& file : files) { std::cout << file.name << std::endl; }
+    },
+    failed
+);
+
+ValidateS3FileOptions validate;
+validate.fileName = "lists/leads.csv";
+validate.returnUrl = "https://example.com/zerobounce-done";
+validate.hasHeaderRow = true;
+validate.emailAddressColumn = 1;   // 1-based; set it to send it, 0 included
+zb->validateS3File(validate, ok, failed);
+
+ScoreS3FileOptions score;
+score.fileName = "lists/leads.csv";
+score.returnUrl = "https://example.com/zerobounce-done";
+zb->scoreS3File(score, ok, failed);
+
 BulkFileJobOptions finder;
 finder.fileName = "lists/leads.csv";
 finder.hasHeaderRow = true;
+finder.returnUrl = "https://example.com/zerobounce-done";
 zb->emailFinderS3File(finder, ok, failed);
 
-BulkFileJobOptions domains;
-domains.fileName = "lists/leads.csv";
+BulkFileJobOptions domains = finder;
 domains.removeDuplicates = true;
-domains.returnUrl = "https://example.com/zerobounce-done";
 zb->domainSearchS3File(domains, ok, failed);
 
-// SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
-// fileName may be left unset for validateSFTPFile alone, which then uses the
-// input bucket from those settings.
-BulkFileJobOptions sftp;
-zb->validateSFTPFile(sftp, ok, failed);
+// export_bucket is optional: std::nullopt uses the export bucket from your
+// ZeroBounce settings.
+zb->exportS3File("<FILE_ID>", std::nullopt, ok, failed);
+zb->exportS3File("<FILE_ID>", std::string("my-export-bucket"), ok, failed);
 
+// SFTP/FTP. The server, path and protocol come from your ZeroBounce settings.
+// The docs list fileName as optional for validateSFTPFile, but the live API
+// requires it there too.
+BulkFileJobOptions sftp;
 sftp.fileName = "my_file.txt";
+sftp.returnUrl = "https://example.com/zerobounce-done";
+zb->validateSFTPFile(sftp, ok, failed);
 zb->scoreSFTPFile(sftp, ok, failed);
 zb->emailFinderSFTPFile(sftp, ok, failed);
 zb->domainSearchSFTPFile(sftp, ok, failed);
@@ -459,10 +486,16 @@ zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
 ## Per-API base URLs
 
 The list evaluator and the Inbox Placement Tester have their own base URLs,
-separate from the main and bulk hosts.
+separate from the main and bulk hosts. The three bulk hosts have setters of
+their own, so every bulk endpoint can be pointed at a test host.
 
 ```cpp
 zb->setListEvaluatorBaseUrl("https://bulkapi.zerobounce.net/v2/listevaluator");
 zb->setInboxPlacementBaseUrl("https://bulkapi.zerobounce.net/api/ipt");
-```
 
+// The bulk root carries the S3 and SFTP jobs, the bulk email finder and the
+// bulk domain search; the other two carry bulk validation and bulk AI scoring.
+zb->setBulkApiRootUrl("https://bulkapi.zerobounce.net");
+zb->setBulkApiBaseUrl("https://bulkapi.zerobounce.net/v2");
+zb->setBulkApiScoringBaseUrl("https://bulkapi.zerobounce.net/v2/scoring");
+```

@@ -1476,6 +1476,8 @@ TEST_F(Tests, testValidateS3FileValid) {
 
     ValidateS3FileOptions options;
     options.fileName = "bucket/key.csv";
+    // LIVE: the API rejects a job without a return URL.
+    options.returnUrl = "https://example.com/done";
 
     ZeroBounceTest::getInstance()->validateS3File(
         options,

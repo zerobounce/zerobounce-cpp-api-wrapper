@@ -66,6 +66,7 @@ class ZeroBounceWarmup {
         std::string apiKey;
         std::string root;
         bool ready = false;
+        std::string initializeError;
 
     public:
         static constexpr const char* DefaultBaseUrl = "https://warmup-api.zerobounce.net";
@@ -81,8 +82,21 @@ class ZeroBounceWarmup {
          * A key with surrounding whitespace or control characters, or a base
          * URL that is not https, is rejected here: every later call then fails
          * with that message rather than sending the key anywhere.
+         *
+         * The rejection is not silent. `getInitializeError()` returns the
+         * reason straight away, so a bad base URL can be caught at the point
+         * of the mistake instead of on the first request.
          */
         void initialize(const std::string& apiKey, const std::string& baseUrl = DefaultBaseUrl);
+
+        /** True when `initialize` accepted the key and the base URL. */
+        bool isReady() const { return ready; }
+
+        /**
+         * Why the last `initialize` was rejected, or empty when it was accepted.
+         * Never contains the API key.
+         */
+        const std::string& getInitializeError() const { return initializeError; }
 
         void setRequestHandler(BaseRequestHandler* handler) { requestHandler = handler; }
         BaseRequestHandler* getRequestHandler() { return requestHandler; }

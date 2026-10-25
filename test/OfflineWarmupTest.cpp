@@ -224,6 +224,41 @@ TEST(OfflineWarmup, APlainHttpBaseUrlIsRejected) {
     EXPECT_EQ(api.size(), 0u);
 }
 
+// initialize() used to reject a base URL by quietly leaving the client
+// un-ready, with nothing to read back at the point of the mistake.
+TEST(OfflineWarmup, InitializeReportsWhyItRejectedTheArguments) {
+    FakeWarmupApi api;
+
+    OfflineWarmupClient good(api, "warmup-key", "https://warmup.example.com");
+    EXPECT_TRUE(good.isReady());
+    EXPECT_EQ(good.getInitializeError(), "");
+
+    OfflineWarmupClient plainHttp(api, "warmup-key", "http://warmup.example.com");
+    EXPECT_FALSE(plainHttp.isReady());
+    EXPECT_EQ(plainHttp.getInitializeError(), "base_url must be an https:// URL");
+    // And that same reason, not a guess, reaches the error callback.
+    std::string message = captureError([&](auto ok, auto err) { plainHttp.getSeeds(ok, err); });
+    EXPECT_NE(message.find("base_url must be an https:// URL"), std::string::npos) << message;
+
+    OfflineWarmupClient noKey(api, "", "https://warmup.example.com");
+    EXPECT_FALSE(noKey.isReady());
+    EXPECT_EQ(noKey.getInitializeError(), "api_key is required");
+
+    OfflineWarmupClient paddedKey(api, " warmup-key ", "https://warmup.example.com");
+    EXPECT_FALSE(paddedKey.isReady());
+    EXPECT_EQ(paddedKey.getInitializeError(),
+              "api_key has surrounding whitespace or control characters");
+    // The reason never repeats the key back.
+    EXPECT_EQ(paddedKey.getInitializeError().find("warmup-key"), std::string::npos);
+
+    // A later good initialize clears the earlier reason.
+    plainHttp.initialize("warmup-key", "https://warmup.example.com");
+    EXPECT_TRUE(plainHttp.isReady());
+    EXPECT_EQ(plainHttp.getInitializeError(), "");
+
+    EXPECT_EQ(api.size(), 0u);
+}
+
 TEST(OfflineWarmup, ACustomHttpsBaseUrlIsUsed) {
     FakeWarmupApi api;
     OfflineWarmupClient client(api, "warmup-key", "https://warmup.example.com/");

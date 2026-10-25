@@ -263,6 +263,14 @@ private:
             response.header["Content-Type"] = "application/json";
             return response;
         }
+        if (key.rfind("return-url-400-", 0) == 0) {
+            // LIVE: the body the API answers a /validateS3file without a
+            // return_url with, verbatim.
+            response.status_code = 400;
+            response.text = R"({"error_message":"Provided return URL is not permitted: None"})";
+            response.header["Content-Type"] = "application/json";
+            return response;
+        }
         if (key.rfind("empty-", 0) == 0) {
             response.status_code = 200;
             response.text = "";
@@ -723,12 +731,15 @@ TEST(OfflineApi, Priority3EndpointsAndZeroColumn) {
     EmailFinderSendFileOptions finder;
     finder.hasHeaderRow = false;
     finder.firstNameColumn = 0;
+    // A zero column is still "not set", so full_name_column carries the name here.
+    finder.fullNameColumn = 3;
     client.sendEmailFinderFile(kCsv, 1, &finder, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     auto sent = onlyRequest(api);
     EXPECT_EQ(sent.host, "bulkapi.zerobounce.net");
     EXPECT_EQ(sent.path, "/email-finder/sendfile");
     EXPECT_EQ(sent.fields["domain_column"], "1");
     EXPECT_EQ(sent.fields["has_header_row"], "false");
+    EXPECT_EQ(sent.fields["full_name_column"], "3");
     EXPECT_EQ(sent.fields.count("first_name_column"), 0u);
 
     api.clear();
@@ -805,28 +816,36 @@ TEST(OfflineApi, Priority3EndpointsAndZeroColumn) {
     s3.fileName = "inbox.csv";
     s3.emailAddressColumn = 0;
     s3.hasHeaderRow = false;
-    s3.removeDuplicate = true;
+    s3.removeDuplicates = true;
+    s3.returnUrl = "https://example.com/done";
     client.validateS3File(s3, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     auto validated = onlyRequest(api);
     EXPECT_EQ(validated.method, "POST");
+    EXPECT_EQ(validated.host, "bulkapi.zerobounce.net");
     EXPECT_EQ(validated.path, "/validateS3file");
     EXPECT_EQ(validated.fields["file_name"], "inbox.csv");
     EXPECT_EQ(validated.fields["email_address_column"], "0");
     EXPECT_EQ(validated.fields["has_header_row"], "false");
-    EXPECT_EQ(validated.fields["remove_duplicate"], "true");
-    EXPECT_EQ(validated.fields.count("remove_duplicates"), 0u);
+    EXPECT_EQ(validated.fields["remove_duplicates"], "true");
+    EXPECT_EQ(validated.fields["return_url"], "https://example.com/done");
+    EXPECT_EQ(validated.fields["api_key"], "p3-key");
+    // The singular remove_duplicate belongs to the bulk /v2/sendfile upload,
+    // not to the S3 jobs; sending both here was never documented.
+    EXPECT_EQ(validated.fields.count("remove_duplicate"), 0u);
     EXPECT_EQ(validated.fields.count("first_name_column"), 0u);
 
     api.clear();
     ScoreS3FileOptions score;
     score.fileName = "inbox.csv";
+    score.returnUrl = "https://example.com/done";
     client.scoreS3File(score, [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     auto scored = onlyRequest(api);
     EXPECT_EQ(scored.path, "/scoreS3file");
+    EXPECT_EQ(scored.fields["return_url"], "https://example.com/done");
     EXPECT_EQ(scored.fields.count("email_address_column"), 0u);
 
     api.clear();
-    client.exportS3File("fid", "bucket-out", [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
+    client.exportS3File("fid", std::string("bucket-out"), [&](ZBSendFileResponse) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     auto exported = onlyRequest(api);
     EXPECT_EQ(exported.path, "/exportS3file");
     EXPECT_EQ(exported.fields["file_id"], "fid");
@@ -963,6 +982,240 @@ TEST(OfflineApi, S3AndSftpFileJobsRejectInvalidArgumentsBeforeRequest) {
     });
 
     EXPECT_EQ(api.size(), 0u);
+}
+
+// LIVE: POST /validateS3file without return_url answers
+// 400 {"error_message":"Provided return URL is not permitted: None"}, so the
+// two S3 jobs go through the same bulkFileJobFields helper as the other four
+// and require it up front.
+TEST(OfflineApi, ValidateAndScoreS3FileShareTheBulkFileJobFields) {
+    FakeApi api;
+    OfflineClient client(api, "s3-shared-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+
+    ValidateS3FileOptions validate;
+    validate.fileName = "uploads/list.csv";
+    validate.hasHeaderRow = true;
+    validate.removeDuplicates = false;
+    validate.returnUrl = "https://example.com/done";
+    validate.emailAddressColumn = 0;
+    validate.firstNameColumn = 2;
+    validate.lastNameColumn = 3;
+    validate.genderColumn = 4;
+    validate.ipAddressColumn = 5;
+    validate.allowPhase2 = true;
+    client.validateS3File(validate, [&](ZBSendFileResponse response) {
+        EXPECT_TRUE(response.success);
+        EXPECT_EQ(response.fileId, "s3-shared-key");
+    }, fail);
+    auto validated = onlyRequest(api);
+    EXPECT_EQ(validated.method, "POST");
+    EXPECT_EQ(validated.url, "https://bulkapi.zerobounce.net/validateS3file");
+    // The shared fields, in the shape bulkFileJobFields puts them in.
+    EXPECT_EQ(validated.fields["file_name"], "uploads/list.csv");
+    EXPECT_EQ(validated.fields["has_header_row"], "true");
+    EXPECT_EQ(validated.fields["remove_duplicates"], "false");
+    EXPECT_EQ(validated.fields["return_url"], "https://example.com/done");
+    // The key goes in the form body, not on the query string.
+    EXPECT_EQ(validated.fields["api_key"], "s3-shared-key");
+    EXPECT_EQ(validated.url.find("api_key"), std::string::npos);
+    // The fields only validateS3file takes.
+    EXPECT_EQ(validated.fields["email_address_column"], "0");
+    EXPECT_EQ(validated.fields["first_name_column"], "2");
+    EXPECT_EQ(validated.fields["last_name_column"], "3");
+    EXPECT_EQ(validated.fields["gender_column"], "4");
+    EXPECT_EQ(validated.fields["ip_address_column"], "5");
+    EXPECT_EQ(validated.fields["allow_phase_2"], "true");
+    EXPECT_EQ(validated.fields.count("remove_duplicate"), 0u);
+
+    api.clear();
+    ScoreS3FileOptions score;
+    score.fileName = "uploads/list.csv";
+    score.hasHeaderRow = false;
+    score.removeDuplicates = true;
+    score.returnUrl = "https://example.com/scored";
+    score.emailAddressColumn = 2;
+    client.scoreS3File(score, [&](ZBSendFileResponse) {}, fail);
+    auto scored = onlyRequest(api);
+    EXPECT_EQ(scored.method, "POST");
+    EXPECT_EQ(scored.url, "https://bulkapi.zerobounce.net/scoreS3file");
+    EXPECT_EQ(scored.fields["file_name"], "uploads/list.csv");
+    EXPECT_EQ(scored.fields["has_header_row"], "false");
+    EXPECT_EQ(scored.fields["remove_duplicates"], "true");
+    EXPECT_EQ(scored.fields["return_url"], "https://example.com/scored");
+    EXPECT_EQ(scored.fields["api_key"], "s3-shared-key");
+    EXPECT_EQ(scored.fields["email_address_column"], "2");
+    EXPECT_EQ(scored.fields.count("remove_duplicate"), 0u);
+    // allow_phase_2 and the name columns are not scoreS3file's.
+    EXPECT_EQ(scored.fields.count("allow_phase_2"), 0u);
+    EXPECT_EQ(scored.fields.count("first_name_column"), 0u);
+
+    // An unset or blank return_url is rejected before anything is sent.
+    api.clear();
+    auto succeeded = [&](ZBSendFileResponse) { FAIL() << "success"; };
+    auto expectReturnUrl = [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("return_url"), std::string::npos);
+    };
+    ValidateS3FileOptions noReturnUrl;
+    noReturnUrl.fileName = "uploads/list.csv";
+    client.validateS3File(noReturnUrl, succeeded, expectReturnUrl);
+    noReturnUrl.returnUrl = "   ";
+    client.validateS3File(noReturnUrl, succeeded, expectReturnUrl);
+    ScoreS3FileOptions scoreNoReturnUrl;
+    scoreNoReturnUrl.fileName = "uploads/list.csv";
+    client.scoreS3File(scoreNoReturnUrl, succeeded, expectReturnUrl);
+    scoreNoReturnUrl.returnUrl = "\t";
+    client.scoreS3File(scoreNoReturnUrl, succeeded, expectReturnUrl);
+
+    auto expectFileName = [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("file_name"), std::string::npos);
+    };
+    ValidateS3FileOptions blankName;
+    blankName.fileName = "   ";
+    blankName.returnUrl = "https://example.com/done";
+    client.validateS3File(blankName, succeeded, expectFileName);
+    ScoreS3FileOptions blankScoreName;
+    blankScoreName.returnUrl = "https://example.com/done";
+    client.scoreS3File(blankScoreName, succeeded, expectFileName);
+
+    EXPECT_EQ(api.size(), 0u);
+}
+
+TEST(OfflineApi, AValidateS3FileReturnUrlRejectionIsReadBack) {
+    FakeApi api;
+    OfflineClient client(api, "return-url-400-key");
+    ValidateS3FileOptions options;
+    options.fileName = "uploads/list.csv";
+    // The SDK's own check is satisfied; the scripted API still refuses.
+    options.returnUrl = "https://example.com/done";
+    bool errored = false;
+    client.validateS3File(options, [&](ZBSendFileResponse) { FAIL() << "success"; }, [&](ZBErrorResponse error) {
+        errored = true;
+        auto captured = captureError(error);
+        EXPECT_EQ(captured.text, "Provided return URL is not permitted: None");
+        EXPECT_EQ(error.statusCode, 400);
+    });
+    EXPECT_TRUE(errored);
+    EXPECT_EQ(onlyRequest(api).path, "/validateS3file");
+}
+
+// The docs make export_bucket optional, and exportSFTPFile already treats
+// export_path that way.
+TEST(OfflineApi, ExportS3FileTreatsTheBucketAsOptional) {
+    FakeApi api;
+    OfflineClient client(api, "export-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+
+    client.exportS3File("fid", std::nullopt, [&](ZBSendFileResponse response) {
+        EXPECT_TRUE(response.success);
+    }, fail);
+    auto withoutBucket = onlyRequest(api);
+    EXPECT_EQ(withoutBucket.method, "POST");
+    EXPECT_EQ(withoutBucket.url, "https://bulkapi.zerobounce.net/exportS3file");
+    EXPECT_EQ(withoutBucket.fields["file_id"], "fid");
+    EXPECT_EQ(withoutBucket.fields["api_key"], "export-key");
+    EXPECT_EQ(withoutBucket.fields.count("export_bucket"), 0u);
+
+    api.clear();
+    client.exportS3File("fid", std::string("bucket-out"), [&](ZBSendFileResponse) {}, fail);
+    auto withBucket = onlyRequest(api);
+    EXPECT_EQ(withBucket.fields["export_bucket"], "bucket-out");
+    EXPECT_EQ(withBucket.fields.count("export_path"), 0u);
+
+    // A bucket that was passed but is blank is a mistake, not an omission.
+    api.clear();
+    auto succeeded = [&](ZBSendFileResponse) { FAIL() << "success"; };
+    client.exportS3File("fid", std::string("  "), succeeded, [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("export_bucket"), std::string::npos);
+    });
+    client.exportS3File("  ", std::nullopt, succeeded, [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("file_id"), std::string::npos);
+    });
+    EXPECT_EQ(api.size(), 0u);
+}
+
+// The bulk email finder upload needs a name to work from: one of
+// first_name_column and full_name_column is required.
+TEST(OfflineApi, EmailFinderSendFileRequiresAFirstOrFullNameColumn) {
+    FakeApi api;
+    OfflineClient client(api, "finder-file-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+
+    EmailFinderSendFileOptions firstName;
+    firstName.firstNameColumn = 2;
+    firstName.lastNameColumn = 3;
+    client.sendEmailFinderFile(kCsv, 1, &firstName, [&](ZBSendFileResponse) {}, fail);
+    auto withFirstName = onlyRequest(api);
+    EXPECT_EQ(withFirstName.method, "POST");
+    EXPECT_EQ(withFirstName.url, "https://bulkapi.zerobounce.net/email-finder/sendfile");
+    EXPECT_EQ(withFirstName.fields["domain_column"], "1");
+    EXPECT_EQ(withFirstName.fields["first_name_column"], "2");
+    EXPECT_EQ(withFirstName.fields["api_key"], "finder-file-key");
+    EXPECT_EQ(withFirstName.fields.count("full_name_column"), 0u);
+
+    api.clear();
+    EmailFinderSendFileOptions fullName;
+    fullName.fullNameColumn = 4;
+    client.sendEmailFinderFile(kCsv, 1, &fullName, [&](ZBSendFileResponse) {}, fail);
+    auto withFullName = onlyRequest(api);
+    EXPECT_EQ(withFullName.fields["full_name_column"], "4");
+    EXPECT_EQ(withFullName.fields.count("first_name_column"), 0u);
+
+    api.clear();
+    auto succeeded = [&](ZBSendFileResponse) { FAIL() << "success"; };
+    auto expectNameColumn = [&](ZBErrorResponse error) {
+        EXPECT_NE(error.toString().find("first_name_column or full_name_column"), std::string::npos);
+    };
+    client.sendEmailFinderFile(kCsv, 1, nullptr, succeeded, expectNameColumn);
+    EmailFinderSendFileOptions neither;
+    neither.lastNameColumn = 2;
+    neither.middleNameColumn = 3;
+    client.sendEmailFinderFile(kCsv, 1, &neither, succeeded, expectNameColumn);
+    EXPECT_EQ(api.size(), 0u);
+}
+
+// The bulk hosts had no setters at all, so every bulk endpoint could only ever
+// reach production and none of them could be pointed at a test host.
+TEST(OfflineApi, TheBulkBaseUrlsCanBePointedAtATestHost) {
+    FakeApi api;
+    OfflineClient client(api, "base-url-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+    client.setBulkApiRootUrl("https://bulk.test.example");
+    client.setBulkApiBaseUrl("https://bulk.test.example/v2");
+    client.setBulkApiScoringBaseUrl("https://bulk.test.example/v2/scoring");
+
+    SendFileOptions sendOptions;
+    client.sendFile(kCsv, 1, sendOptions, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).url, "https://bulk.test.example/v2/sendfile");
+
+    api.clear();
+    client.scoringSendFile(kCsv, 1, sendOptions, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).url, "https://bulk.test.example/v2/scoring/sendfile");
+
+    api.clear();
+    client.fileStatus("fid", [&](ZBFileStatusResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).host, "bulk.test.example");
+
+    api.clear();
+    client.scoringFileStatus("fid", [&](ZBFileStatusResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).path, "/v2/scoring/filestatus");
+
+    api.clear();
+    BulkFileJobOptions job;
+    job.fileName = "uploads/list.csv";
+    job.returnUrl = "https://example.com/done";
+    client.validateSFTPFile(job, [&](ZBSendFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).url, "https://bulk.test.example/validateSFTPfile");
+
+    api.clear();
+    client.emailFinderDeleteFile("fid", [&](ZBDeleteFileResponse) {}, fail);
+    EXPECT_EQ(onlyRequest(api).host, "bulk.test.example");
+
+    // The list evaluator and the Inbox Placement Tester are not built from the
+    // bulk root, so their own setters still govern them.
+    api.clear();
+    client.getListEvaluatorResult("fid", [&](std::string) {}, fail);
+    EXPECT_EQ(onlyRequest(api).host, "bulkapi.zerobounce.net");
 }
 
 #endif

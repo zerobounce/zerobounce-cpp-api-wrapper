@@ -74,13 +74,16 @@ ZeroBounceWarmup::ZeroBounceWarmup()
 
 void ZeroBounceWarmup::initialize(const std::string& key, const std::string& baseUrl) {
     ready = false;
+    initializeError.clear();
     apiKey = key;
     if (trimmed(key).empty()) {
+        initializeError = "api_key is required";
         return;
     }
     // A key with surrounding whitespace or control characters would be quoted,
     // unredacted, in the HTTP library's own error.
     if (key != trimmed(key) || hasControlCharacters(key)) {
+        initializeError = "api_key has surrounding whitespace or control characters";
         return;
     }
     std::string base = baseUrl.empty() ? std::string(DefaultBaseUrl) : baseUrl;
@@ -88,7 +91,12 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
+    // The Warmup key travels in a request header, so a plain-http base URL
+    // would put it on the wire in the clear. Rejected, and the reason is kept
+    // rather than dropped: a caller that only ever looked at initialize() used
+    // to get no signal at all.
     if (lower.rfind("https://", 0) != 0) {
+        initializeError = "base_url must be an https:// URL";
         return;
     }
     while (!base.empty() && base.back() == '/') {
@@ -134,7 +142,12 @@ struct WarmupResult {
  */
 namespace {
 
-bool warmupReady(const std::string& apiKey, bool ready, const OnErrorCallback& errorCallback) {
+bool warmupReady(
+    const std::string& apiKey,
+    bool ready,
+    const std::string& initializeError,
+    const OnErrorCallback& errorCallback
+) {
     if (trimmed(apiKey).empty()) {
         reportError(errorCallback, "api_key is required");
         return false;
@@ -144,7 +157,12 @@ bool warmupReady(const std::string& apiKey, bool ready, const OnErrorCallback& e
         return false;
     }
     if (!ready) {
-        reportError(errorCallback, "base_url must be an https:// URL");
+        // Repeat what initialize() rejected rather than guessing at a reason.
+        reportError(
+            errorCallback,
+            initializeError.empty() ? "ZeroBounceWarmup is not initialized. Call initialize(apiKey) first"
+                                    : initializeError
+        );
         return false;
     }
     return true;
@@ -318,14 +336,14 @@ bool engagementBody(
 // -- sending accounts --------------------------------------------------------
 
 void ZeroBounceWarmup::listSendingAccounts(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/sending-accounts", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::getSendingAccount(
     const std::string& fromAddress, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     warmupJson(this, "GET", root + "/sending-account?from_address=" + urlEncode(fromAddress),
                nullptr, {}, ok, err);
@@ -338,7 +356,7 @@ void ZeroBounceWarmup::addSendingAccount(
     OnRawJsonSuccessCallback ok,
     OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     if (std::find(kOnboardingModels.begin(), kOnboardingModels.end(), onboardingModel)
             == kOnboardingModels.end()) {
@@ -409,7 +427,7 @@ void ZeroBounceWarmup::updateSendingAccount(
     const std::string& fromAddress, int engagementRuleId, int statusId, bool autoEnable,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     if (!requireRange(engagementRuleId, 0, 4, "engagement_rule_id", err)) return;
     if (!requireRange(statusId, 0, 8, "status_id", err)) return;
@@ -427,7 +445,7 @@ void ZeroBounceWarmup::updateSendingAccount(
 void ZeroBounceWarmup::deleteSendingAccount(
     const std::string& fromAddress, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     warmupJson(this, "DELETE", root + "/sending-accounts?from_address=" + urlEncode(fromAddress),
                nullptr, {}, ok, err);
@@ -437,7 +455,7 @@ void ZeroBounceWarmup::changeFromAddress(
     const std::string& oldFromAddress, const std::string& newFromAddress,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(oldFromAddress, "old_from_address", err)) return;
     if (!requireValue(newFromAddress, "new_from_address", err)) return;
 
@@ -452,7 +470,7 @@ void ZeroBounceWarmup::changeFromAddress(
 void ZeroBounceWarmup::listFromAddresses(
     const WarmupListFromAddressesOptions& options, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
 
     std::string url = root + "/from-addresses";
     std::string separator = "?";
@@ -490,14 +508,14 @@ void ZeroBounceWarmup::listFromAddresses(
 // -- engagement rules --------------------------------------------------------
 
 void ZeroBounceWarmup::getEngagementRules(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/engagement-rules", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::setEngagementRule(
     const std::string& cFrom, int ruleId, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(cFrom, "c_from", err)) return;
     if (!requireRange(ruleId, 0, 4, "rule_id", err)) return;
 
@@ -511,7 +529,7 @@ void ZeroBounceWarmup::setEngagementRule(
 void ZeroBounceWarmup::getCustomEngagement(
     const std::string& cFrom, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(cFrom, "c_from", err)) return;
     const std::string segment = trimmed(cFrom);
     if (segment == "." || segment == "..") {
@@ -525,7 +543,7 @@ void ZeroBounceWarmup::createCustomEngagement(
     const std::string& cFrom, int replyPct, int importantPct, int clickPct,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     std::string payload;
     if (!engagementBody(cFrom, replyPct, importantPct, clickPct, payload, err)) return;
     warmupJson(this, "POST", root + "/custom-engagement", &payload, {}, ok, err);
@@ -535,7 +553,7 @@ void ZeroBounceWarmup::updateCustomEngagement(
     const std::string& cFrom, int replyPct, int importantPct, int clickPct,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     std::string payload;
     if (!engagementBody(cFrom, replyPct, importantPct, clickPct, payload, err)) return;
     warmupJson(this, "PUT", root + "/custom-engagement", &payload, {}, ok, err);
@@ -544,7 +562,7 @@ void ZeroBounceWarmup::updateCustomEngagement(
 void ZeroBounceWarmup::deleteCustomEngagement(
     const std::string& cFrom, int engagementRuleId, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(cFrom, "c_from", err)) return;
     if (!requireRange(engagementRuleId, 1, 4, "engagement_rule_id", err)) return;
 
@@ -558,39 +576,39 @@ void ZeroBounceWarmup::deleteCustomEngagement(
 // -- statistics, seeds and utilities -----------------------------------------
 
 void ZeroBounceWarmup::getSeeds(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/seeds", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::downloadSeeds(OnSuccessCallback<std::string> ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupCsv(this, root + "/seeds/download", ok, err);
 }
 
 void ZeroBounceWarmup::getSeedCount(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/seed-count", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::getProgressToday(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/progress-today", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::getSentToday(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/sent-today", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::getEmailsPerDay(OnRawJsonSuccessCallback ok, OnErrorCallback err) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     warmupJson(this, "GET", root + "/emails-per-day", nullptr, {}, ok, err);
 }
 
 void ZeroBounceWarmup::getStatistics(
     const std::string& fromAddress, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     warmupJson(this, "GET", root + "/statistics?from_address=" + urlEncode(fromAddress),
                nullptr, {}, ok, err);
@@ -600,7 +618,7 @@ void ZeroBounceWarmup::getStatisticsPerDay(
     const std::string& fromAddress, const std::string& startDate, const std::string& endDate,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     if (!isIsoDate(startDate)) {
         reportError(err, "start_date must be YYYY-MM-DD");
@@ -623,7 +641,7 @@ void ZeroBounceWarmup::getStatisticsPerDay(
 void ZeroBounceWarmup::getStatisticsDetailed(
     const std::string& cFrom, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(cFrom, "c_from", err)) return;
     warmupJson(this, "GET", root + "/statistics-detailed?c_from=" + urlEncode(cFrom),
                nullptr, {}, ok, err);
@@ -632,7 +650,7 @@ void ZeroBounceWarmup::getStatisticsDetailed(
 void ZeroBounceWarmup::downloadStatistics(
     const std::string& cFrom, OnSuccessCallback<std::string> ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(cFrom, "c_from", err)) return;
     warmupCsv(this, root + "/statistics/download?c_from=" + urlEncode(cFrom), ok, err);
 }
@@ -640,7 +658,7 @@ void ZeroBounceWarmup::downloadStatistics(
 void ZeroBounceWarmup::getFromAddressStatistics(
     const std::string& fromAddress, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     warmupJson(this, "GET", root + "/from-address-statistics?from_address=" + urlEncode(fromAddress),
                nullptr, {}, ok, err);
@@ -650,7 +668,7 @@ void ZeroBounceWarmup::checkDomainDmarc(
     const std::string& fromAddress, const std::optional<std::string>& dkimSelector,
     OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     if (fromAddress.find('@') == std::string::npos) {
         reportError(err, "from_address must be an email address, e.g. sender@example.com");
@@ -668,7 +686,7 @@ void ZeroBounceWarmup::testSmtpConfiguration(
     const std::string& fromAddress, const std::string& username, const std::string& password,
     const std::string& server, int port, OnRawJsonSuccessCallback ok, OnErrorCallback err
 ) {
-    if (!warmupReady(apiKey, ready, err)) return;
+    if (!warmupReady(apiKey, ready, initializeError, err)) return;
     if (!requireValue(fromAddress, "from_address", err)) return;
     if (!requireValue(username, "username", err)) return;
     if (!requireValue(password, "password", err)) return;
