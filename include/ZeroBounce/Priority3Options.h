@@ -17,11 +17,16 @@ struct DomainSearchSendFileOptions {
 };
 
 /**
- * The documented fields shared by the six S3 and SFTP/FTP file jobs.
+ * The documented fields shared by the eight S3 and SFTP/FTP file jobs.
+ * `emailFinderS3File`, `domainSearchS3File` and the four SFTP/FTP jobs take this
+ * struct; `validateS3File` and `scoreS3File` take their own options, which carry
+ * the same fields.
  *
- * `fileName` is required by every job except `validateSFTPFile`, where the docs
- * list it as optional: leaving it unset there uses the input bucket configured
- * in your ZeroBounce settings.
+ * `fileName` and `returnUrl` are required by every one of these jobs,
+ * `validateSFTPFile` included, although the docs list `file_name` as optional
+ * there. Leaving either unset or blank is rejected with
+ * "Empty parameter: file_name" or "Empty parameter: return_url" before a request
+ * is sent.
  */
 struct BulkFileJobOptions {
     std::optional<std::string> fileName;

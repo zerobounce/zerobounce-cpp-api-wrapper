@@ -253,17 +253,20 @@ bool warmupJson(
         }
         return true;
     }
+    // Only the parse is guarded: an exception thrown by the caller's callback
+    // reaches the caller instead of being reported as an API error.
+    std::string payload;
     try {
-        json parsed = json::parse(result.body);
-        if (successCallback) {
-            successCallback(parsed.dump());
-        }
-        return true;
+        payload = json::parse(result.body).dump();
     } catch (const std::exception&) {
         reportError(errorCallback,
             redact(zbMessageFromBody(result.body, result.statusCode), secrets), result.statusCode);
         return false;
     }
+    if (successCallback) {
+        successCallback(payload);
+    }
+    return true;
 }
 
 bool warmupCsv(

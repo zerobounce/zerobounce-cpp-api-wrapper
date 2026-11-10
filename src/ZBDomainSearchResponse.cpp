@@ -4,7 +4,7 @@
 
 std::string ZBDomainFormat::toString() {
     std::stringstream stringStream;
-    stringStream << "ZBDomainSearchResponse{ " <<
+    stringStream << "ZBDomainFormat{ " <<
         "confidence=" << '"' << this->confidence << '"' << ", "
         "format=" << '"' << this->format << '"' << "}";
 

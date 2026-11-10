@@ -1517,3 +1517,243 @@ TEST_F(Tests, testListS3filesValid) {
     );
 }
 
+
+// --- HTTP 200 carrying only an error body ---
+//
+// LIVE: an invalid or drained key answers every v2 endpoint with an HTTP 200
+// and a body that is nothing but {"error": ...} -- no "success" field to gate
+// on. That used to be parsed into a zeroed result struct and handed to the
+// success callback, so a caller that never read .error silently got empty
+// data as though it were real.
+
+TEST_F(Tests, testGetApiUsageInvalidKeyOn200CallsErrorCallback) {
+    std::string responseJson = R"({"error":"Invalid API key"})";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    std::tm startDate = {0};
+    startDate.tm_year = 118;
+    startDate.tm_mon = 0;
+    startDate.tm_mday = 1;
+
+    std::tm endDate = {0};
+    endDate.tm_year = 123;
+    endDate.tm_mon = 11;
+    endDate.tm_mday = 12;
+
+    bool errorCalled = false;
+    ZeroBounceTest::getInstance()->getApiUsage(
+        startDate,
+        endDate,
+        [&](ZBGetApiUsageResponse response) {
+            FAIL() << "a zeroed result was returned as a success: " << response.toString();
+        },
+        [&](ZBErrorResponse errorResponse) {
+            errorCalled = true;
+            ASSERT_EQ(errorResponse.errors.size(), 1u);
+            ASSERT_EQ(errorResponse.errors[0], "Invalid API key");
+        }
+    );
+    ASSERT_TRUE(errorCalled);
+}
+
+TEST_F(Tests, testValidateInvalidKeyOn200CallsErrorCallback) {
+    std::string responseJson =
+        R"({"error":"Invalid API key or your account ran out of credits"})";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    bool errorCalled = false;
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            FAIL() << "an empty validation was returned as a success: " << response.toString();
+        },
+        [&](ZBErrorResponse errorResponse) {
+            errorCalled = true;
+            ASSERT_EQ(errorResponse.errors.size(), 1u);
+            ASSERT_EQ(errorResponse.errors[0], "Invalid API key or your account ran out of credits");
+        }
+    );
+    ASSERT_TRUE(errorCalled);
+}
+
+TEST_F(Tests, testErrorMessageFieldOn200CallsErrorCallback) {
+    std::string responseJson = R"({"error_message":"Missing parameter: api_key."})";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    bool errorCalled = false;
+    ZeroBounceTest::getInstance()->getCredits(
+        [&](ZBCreditsResponse response) {
+            FAIL() << response.toString();
+        },
+        [&](ZBErrorResponse errorResponse) {
+            errorCalled = true;
+            ASSERT_EQ(errorResponse.errors.size(), 1u);
+            ASSERT_EQ(errorResponse.errors[0], "Missing parameter: api_key.");
+        }
+    );
+    ASSERT_TRUE(errorCalled);
+}
+
+// A truthy "success" still wins over a "message" field: a bulk submit answers
+// {"success": true, "message": "File Accepted"} and is a result, not an error.
+TEST_F(Tests, testSuccessWithMessageFieldStillSucceeds) {
+    std::string responseJson = R"({
+        "success":true,
+        "message":"File Accepted",
+        "file_name":"email_file.csv",
+        "file_id":"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    SendFileOptions options;
+    bool successCalled = false;
+    ZeroBounceTest::getInstance()->sendFile(
+        "../email_file.csv",
+        1,
+        options,
+        [&](ZBSendFileResponse response) {
+            successCalled = true;
+            ASSERT_TRUE(response.success);
+            ASSERT_EQ(response.fileId, "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+    ASSERT_TRUE(successCalled);
+}
+
+// A greylist pickup still running carries "Message" with no "success" field.
+// It is a result, which is why only "error"/"error_message" decide.
+TEST_F(Tests, testGreylistedValidationIsNotAnError) {
+    std::string responseJson = R"({
+        "address":"valid@example.com",
+        "status":"unknown",
+        "sub_status":"greylisted",
+        "Message":"Greylisted, try again later"
+    })";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    bool successCalled = false;
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com",
+        "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            successCalled = true;
+            ASSERT_EQ(response.message, "Greylisted, try again later");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+    ASSERT_TRUE(successCalled);
+}
+
+// LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
+// nothing but {"Message": ...}. It used to come back as an empty result.
+TEST_F(Tests, testFinderMessageOnlyOn200CallsErrorCallback) {
+    std::string responseJson = R"({"Message":"Invalid API key or your account ran out of credits"})";
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    int errors = 0;
+    auto expectDrained = [&](ZBErrorResponse errorResponse) {
+        errors++;
+        ASSERT_EQ(errorResponse.errors.size(), 1u);
+        ASSERT_EQ(errorResponse.errors[0], "Invalid API key or your account ran out of credits");
+    };
+    ZeroBounceTest::getInstance()->findEmailByDomain(
+        "example.com", "john",
+        [&](ZBFindEmailResponse response) { FAIL() << "empty finder result: " << response.toString(); },
+        expectDrained);
+    ZeroBounceTest::getInstance()->searchDomainByDomain(
+        "example.com",
+        [&](ZBDomainSearchResponse response) { FAIL() << "empty domain search: " << response.toString(); },
+        expectDrained);
+    ZeroBounceTest::getInstance()->findEmail(
+        "example.com", "john", "doe",
+        [&](ZBFindEmailResponse response) { FAIL() << "empty finder result: " << response.toString(); },
+        expectDrained);
+    ASSERT_EQ(errors, 3);
+}
+
+// LIVE: the filters answer an invalid or drained key with an HTTP 200 and a
+// capitalised {"Error": ...}.
+TEST_F(Tests, testFiltersCapitalisedErrorOn200CallsErrorCallback) {
+    std::string responseJson = R"({  "Error": "Invalid API key or your account ran out of credits"})";
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    int errors = 0;
+    auto expectDrained = [&](ZBErrorResponse errorResponse) {
+        errors++;
+        ASSERT_EQ(errorResponse.errors.size(), 1u);
+        ASSERT_EQ(errorResponse.errors[0], "Invalid API key or your account ran out of credits");
+    };
+    auto noSuccess = [&](const std::string& body) { FAIL() << "error body returned as a success: " << body; };
+    ZeroBounceTest::getInstance()->addFilter("allow", "email", "x@example.com", noSuccess, expectDrained);
+    ZeroBounceTest::getInstance()->deleteFilter("allow", "email", "x@example.com", noSuccess, expectDrained);
+    ZeroBounceTest::getInstance()->listFilters(false, noSuccess, expectDrained);
+    ZeroBounceTest::getInstance()->listFilters(true, noSuccess, expectDrained);
+    ASSERT_EQ(errors, 4);
+}
+
+// A repeated greylist_processing validate answers with nothing but "Message".
+// That is a result, so the finder's message-only rule must not apply here.
+TEST_F(Tests, testGreylistStillInProgressValidateIsAResult) {
+    std::string responseJson = R"({"Message":"Greylist validation still in progress. Please try again later."})";
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    bool successCalled = false;
+    ZeroBounceTest::getInstance()->validate(
+        "valid@example.com", "127.0.0.1",
+        [&](ZBValidateResponse response) {
+            successCalled = true;
+            ASSERT_EQ(response.message, "Greylist validation still in progress. Please try again later.");
+        },
+        [&](ZBErrorResponse errorResponse) { FAIL() << errorResponse.toString(); });
+    ASSERT_TRUE(successCalled);
+}
+
+// A filter change answers with a bare Message on success.
+TEST_F(Tests, testFilterMessageSuccessIsAResult) {
+    std::string responseJson = R"({"Message":"Filter has been added."})";
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    bool successCalled = false;
+    ZeroBounceTest::getInstance()->addFilter(
+        "allow", "email", "x@example.com",
+        [&](const std::string& body) { successCalled = true; ASSERT_NE(body.find("Filter has been added."), std::string::npos); },
+        [&](ZBErrorResponse errorResponse) { FAIL() << errorResponse.toString(); });
+    ASSERT_TRUE(successCalled);
+}
+
+// Batch validate reports per-address failures in a nested "errors" array while
+// the call itself succeeded.
+TEST_F(Tests, testBatchNestedErrorsAreNotAFailure) {
+    std::string responseJson =
+        R"({"email_batch":[],"errors":[{"email_address":"bad@","error":"Invalid email address"}]})";
+
+    mockRequestHandler->setResponse(mockResponse(responseJson, 200));
+
+    std::vector<ZBEmailToValidate> emails;
+    emails.push_back(ZBEmailToValidate("bad@", "127.0.0.1"));
+
+    bool successCalled = false;
+    ZeroBounceTest::getInstance()->validateBatch(
+        emails,
+        [&](ZBValidateBatchResponse response) {
+            successCalled = true;
+            ASSERT_EQ(response.errors.size(), 1u);
+            ASSERT_EQ(response.errors.front().error, "Invalid email address");
+        },
+        [&](ZBErrorResponse errorResponse) {
+            FAIL() << errorResponse.toString();
+        }
+    );
+    ASSERT_TRUE(successCalled);
+}

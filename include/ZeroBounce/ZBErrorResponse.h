@@ -23,9 +23,13 @@ class ZBErrorResponse {
         std::vector<std::string> errors;
 
         /**
-         * The HTTP status of the failed response, or 0 when the failure never
-         * reached the API. It lets callers tell a 403 from Cloudflare apart
-         * from a 400/404 from the API and a 429 from the Warmup rate limit.
+         * The HTTP status of the response that failed, including an HTTP 200
+         * whose body reports an error. It lets callers tell a 403 from
+         * Cloudflare apart from a 400/404 from the API and a 429 from the
+         * Warmup rate limit. It is 0 when the SDK raised the error itself: an
+         * argument rejected before any request was sent, a request that got no
+         * HTTP response, or a JSON body whose fields do not have the types the
+         * result type reads.
          */
         long statusCode = 0;
 

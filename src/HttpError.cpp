@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
+#include <iterator>
 
 namespace {
 
@@ -57,13 +59,11 @@ std::string stripErrorPrefix(std::string message) {
     }
 }
 
-// Pulls the readable message out of an API error body. "detail" is how the
-// Inbox Placement Tester (Django REST framework) reports errors.
-std::string jsonErrorText(const json& object) {
+std::string jsonErrorTextFrom(const json& object, std::initializer_list<const char*> keys) {
     if (!object.is_object()) {
         return "";
     }
-    for (const char* key : {"error", "message", "error_message", "detail"}) {
+    for (const char* key : keys) {
         if (object.contains(key) && object[key].is_string()) {
             std::string value = trimCopy(object[key].get<std::string>());
             if (!value.empty()) {
@@ -72,6 +72,42 @@ std::string jsonErrorText(const json& object) {
         }
     }
     return "";
+}
+
+// Pulls the readable message out of an API error body, once the response is
+// already known to be a failure. "detail" is how the Inbox Placement Tester
+// (Django REST framework) reports errors.
+std::string jsonErrorText(const json& object) {
+    return jsonErrorTextFrom(object, {"error", "message", "error_message", "Message", "Error", "detail"});
+}
+
+// The API's own message when an HTTP 200 body is nothing but an error: an
+// "error", "error_message" or "Error" field, and no "success" field to gate on.
+// An invalid or drained key answers validate, activity and getapiusage with
+// {"error": ...}, and the filters with {"Error": ...}. "message" and "detail"
+// stay out of this list because successful responses use them too -- a bulk
+// submit answers {"success": true, "message": "File Accepted"}.
+std::string jsonErrorOnlyText(const json& object) {
+    if (!object.is_object() || object.contains("success")) {
+        return "";
+    }
+    return jsonErrorTextFrom(object, {"error", "error_message", "Error"});
+}
+
+// Whether a body is nothing but a message: an object with no "success" field
+// whose keys are all message keys, at least one a non-empty string.
+bool jsonMessageOnly(const json& object) {
+    if (!object.is_object() || object.empty() || object.contains("success")) {
+        return false;
+    }
+    static const char* const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        if (std::find_if(std::begin(keys), std::end(keys),
+                [&](const char* key) { return it.key() == key; }) == std::end(keys)) {
+            return false;
+        }
+    }
+    return !jsonErrorText(object).empty();
 }
 
 bool jsonHasErrorOrMessageKey(const json& object) {
@@ -185,6 +221,34 @@ bool zbReadJsonResponse(
     // LIVE: {"success": false} on an HTTP 200 is a failure, not a result. The
     // API answers an unknown bulk file id that way, with a 200.
     if (out.is_object() && out.contains("success") && zbSuccessMeansFailure(out["success"])) {
+        zbReportHttpError(statusCode, body, errorCallback);
+        return false;
+    }
+    // LIVE: an invalid or drained key answers with an HTTP 200 and a body that
+    // is only {"error": "Invalid API key"} -- no "success" field to gate on.
+    // Without this the body was parsed into a zeroed result struct and handed
+    // to the success callback, so a caller that never read .error silently got
+    // empty data as though it were real.
+    if (!jsonErrorOnlyText(out).empty()) {
+        zbReportHttpError(statusCode, body, errorCallback);
+        return false;
+    }
+    return true;
+}
+
+bool zbReadNonMessageJsonResponse(
+    long statusCode,
+    const std::string& body,
+    json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    if (!zbReadJsonResponse(statusCode, body, out, errorCallback)) {
+        return false;
+    }
+    // LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
+    // nothing but {"Message": "Invalid API key or your account ran out of
+    // credits"}, which used to come back as an empty result.
+    if (jsonMessageOnly(out)) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }

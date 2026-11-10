@@ -9,6 +9,12 @@ More information about ZeroBounce you can find in the [official documentation](h
 - Custom API base URLs (when supported) must use `https://`. Do not pass end-user-controlled hosts into those settings.
 - Request URLs include `api_key` as a query parameter (ZeroBounce API contract). Do not log full request URLs or enable payload debug logging in production.
 
+## REQUIREMENTS
+- CMake 3.20 or newer.
+- A C++20 compiler to build the library: its `CMakeLists.txt` compiles the `ZeroBounce` target (and its fetched dependencies) as C++20.
+- C++17 or newer for your own code that includes the headers. They use `std::optional` and include libcpr's headers, which need C++17. The `ZeroBounce` target requires C++17 of every target that links it (`target_compile_features(ZeroBounce PUBLIC cxx_std_17)`), so CMake compiles a target set to C++14 or older as C++17.
+- On Linux and macOS, OpenSSL with its development files (for example `libssl-dev` on Linux, or Homebrew's `openssl@3` on macOS; pass `-DOPENSSL_ROOT_DIR=...` if CMake does not find it): libcpr builds its bundled libcurl with HTTPS through OpenSSL. curl no longer supports Secure Transport, the macOS system TLS library; to use the system libcurl instead, configure with `-DCPR_USE_SYSTEM_CURL=ON`. On Windows the bundled libcurl uses the system TLS library (Schannel).
+
 ## INSTALLATION
 Before installing the wrapper, you have to make sure that `CMake` is installed on your system. It can be downloaded from [here](https://cmake.org/download/).
 
@@ -54,9 +60,10 @@ cmake --build build
 Be aware that the library may require some .dll files (found in the `build` directory) in order to work properly in your project.
 
 ## USAGE
-Include the library in your file:
+Include the library in your file. The examples below also print with `std::cout`, from `<iostream>`:
 ```cpp
 #include <ZeroBounce/ZeroBounce.h>
+#include <iostream>
 ```
 
 Initialize the wrapper with your api key and preferred api:
@@ -70,10 +77,10 @@ Then you can use any of the wrapper methods, for example:
 ```cpp
 ZeroBounce::getInstance()->getCredits(
     [](ZBCreditsResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -94,10 +101,10 @@ ZeroBounce::getInstance()->getApiUsage(
     startDate,
     endDate,
     [](ZBGetApiUsageResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -111,10 +118,10 @@ ZeroBounce::getInstance()->validate(
     email,
     ipAddress,
     [](ZBValidateResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -129,10 +136,10 @@ std::vector<ZBEmailToValidate> emails = {
 ZeroBounce::getInstance()->validateBatch(
     emails,
     [](ZBValidateBatchResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -144,10 +151,10 @@ std::string email = "valid@example.com";    // Subscriber email address
 ZeroBounce::getInstance()->getActivityData(
     email,
     [](ZBActivityDataResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -171,10 +178,10 @@ ZeroBounce::getInstance()->sendFile(
     emailAddressColumn,
     options,
     [](ZBSendFileResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -188,10 +195,10 @@ ZeroBounce::getInstance()->getFile(
     fileId,
     localDownloadPath,
     [](ZBGetFileResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -211,10 +218,10 @@ std::string fileId = "<FILE_ID>";		// The returned file ID when calling sendfile
 ZeroBounce::getInstance()->fileStatus(
     fileId,
     [](ZBFileStatusResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -226,10 +233,10 @@ std::string fileId = "<FILE_ID>";		// The returned file ID when calling sendfile
 ZeroBounce::getInstance()->deleteFile(
     fileId,
     [](ZBDeleteFileResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -244,16 +251,18 @@ options.returnUrl = "https://domain.com/called/after/processing/request";
 options.hasHeaderRow = true;            // If this is `true` the first row is considered as table headers
 
 
+std::string scoringFileId;                      // Set by the success callback, which runs before scoringSendFile returns
+
 ZeroBounce::getInstance()->scoringSendFile(
     filePath,
     emailAddressColumn,
     options,
-    [](ZBSendFileResponse response) {
-        cout << response.toString() << endl;
+    [&scoringFileId](ZBSendFileResponse response) {
+        std::cout << response.toString() << std::endl;
         scoringFileId = response.fileId;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -267,10 +276,10 @@ ZeroBounce::getInstance()->scoringGetFile(
     fileId,
     localDownloadPath,
     [](ZBGetFileResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -282,10 +291,10 @@ std::string fileId = "<FILE_ID>";                    // The returned file ID whe
 ZeroBounce::getInstance()->scoringFileStatus(
     fileId,
     [](ZBFileStatusResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -295,28 +304,34 @@ ZeroBounce::getInstance()->scoringFileStatus(
 std::string fileId = "<FILE_ID>";                       // The returned file ID when calling scoringSendfile API
 
 ZeroBounce::getInstance()->scoringDeleteFile(
-    scoringFileId,
+    fileId,
     [](ZBDeleteFileResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
 
 * #### Email finder allows you to identify the correct email format when you provide a name and email domain or company name
 ```cpp
+std::string domain = "example.com";         // The email domain
+std::string company_name = "Example Inc";   // Or the company name
+std::string first_name = "John";
+std::string middle_name = "";               // Optional
+std::string last_name = "Doe";
+
 ZeroBounce::getInstance()->findEmailByDomain(
     domain,
     first_name,
     middle_name,
     last_name,
     [](ZBFindEmailResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 
@@ -326,33 +341,36 @@ ZeroBounce::getInstance()->findEmailByCompanyName(
     middle_name,
     last_name,
     [](ZBFindEmailResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
 
 * #### Domain search allows you to identify the email domain when you provide a domain or company name
 ```cpp
+std::string domain = "example.com";         // The email domain
+std::string company_name = "Example Inc";   // Or the company name
+
 ZeroBounce::getInstance()->searchDomainByDomain(
     domain,
     [](ZBDomainSearchResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 
 ZeroBounce::getInstance()->searchDomainByCompanyName(
     company_name,
     [](ZBDomainSearchResponse response) {
-        cout << response.toString() << endl;
+        std::cout << response.toString() << std::endl;
     },
     [](ZBErrorResponse errorResponse) {
-        cout << errorResponse.toString() << endl;
+        std::cout << errorResponse.toString() << std::endl;
     }
 );
 ```
@@ -370,8 +388,8 @@ After checking out the repo, build the library then run tests.
 You should see an output like this
 
 ```bash
-[==========] 26 tests from 1 test suite ran. (7 ms total)
-[  PASSED  ] 26 tests.
+[==========] 138 tests from 3 test suites ran. (936 ms total)
+[  PASSED  ] 138 tests.
 ```
 
 ## Publish
@@ -384,6 +402,8 @@ No package registry — GitHub release only. Pin the tag in FetchContent or as a
 ## Validate options
 
 ```cpp
+ZeroBounce* zb = ZeroBounce::getInstance();
+
 ZBValidateOptions options;
 // domainInfo adds domainWebsiteExists and domainRegistrantCompanyName.
 options.domainInfo = true;
@@ -408,10 +428,12 @@ Lives on `https://bulkapi.zerobounce.net/api/ipt`, authenticates with an
 `Authorization: Bearer` header, and spends inbox test credits.
 
 ```cpp
-zb->getInboxPlacementProviders(
-    [](std::string json) { std::cout << json << std::endl; },
-    [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; }
-);
+ZeroBounce* zb = ZeroBounce::getInstance();
+// Every Inbox Placement call hands the API's JSON body to the success callback.
+auto onSuccess = [](std::string json) { std::cout << json << std::endl; };
+auto onError = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
+
+zb->getInboxPlacementProviders(onSuccess, onError);
 
 // testType 1 (Email) needs senderEmail; 2 is Unique ID and 3 is Auto Alias.
 CreateInboxPlacementTestOptions options;
@@ -444,12 +466,16 @@ SFTP/FTP server. See the [S3](https://www.zerobounce.net/docs/api-integrations/a
 and [SFTP](https://www.zerobounce.net/docs/api-integrations/sftp_bulk_api) docs.
 
 ```cpp
+ZeroBounce* zb = ZeroBounce::getInstance();
 auto ok = [](ZBSendFileResponse response) { std::cout << response.toString() << std::endl; };
 auto failed = [](ZBErrorResponse error) { std::cout << error.toString() << std::endl; };
 
-// fileName and returnUrl are required on every one of these six jobs. The docs
-// mark them optional; the live API rejects a job without a return URL with
-// "Provided return URL is not permitted: None".
+// fileName and returnUrl are required on all eight validate, score, email
+// finder and domain search jobs below, S3 and SFTP/FTP alike; leaving either
+// unset is rejected before a request is sent. The docs mark them optional; the
+// live API rejects a job without a return URL with
+// "Provided return URL is not permitted: None". listS3files and the two
+// exports do not take them.
 
 // Amazon S3. fileName is the full path, as returned by listS3files.
 zb->listS3files(std::string("my-bucket"), std::string("leads"),
@@ -507,10 +533,15 @@ zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
 The Warmup API is a separate product. It has its own host, its own team-scoped key, and its own client; your validation key will not work with it.
 
 ```cpp
-#include "ZeroBounce/ZeroBounceWarmup.h"
+#include <ZeroBounce/ZeroBounceWarmup.h>
 
 ZeroBounceWarmup warmup;
 warmup.initialize("<YOUR_WARMUP_API_KEY>");
+
+// Most Warmup calls hand the API's JSON body to the success callback. The
+// snippets below reuse warmup, onSuccess and onError from this one.
+auto onSuccess = [](std::string json) { std::cout << json << std::endl; };
+auto onError = [](ZBErrorResponse error) { std::cout << error.statusCode << " " << error.toString() << std::endl; };
 
 // initialize rejects a padded key or a base URL that is not https, and says so
 // rather than leaving the client quietly unusable.
@@ -578,6 +609,7 @@ separate from the main and bulk hosts. The three bulk hosts have setters of
 their own, so every bulk endpoint can be pointed at a test host.
 
 ```cpp
+ZeroBounce* zb = ZeroBounce::getInstance();
 zb->setListEvaluatorBaseUrl("https://bulkapi.zerobounce.net/v2/listevaluator");
 zb->setInboxPlacementBaseUrl("https://bulkapi.zerobounce.net/api/ipt");
 

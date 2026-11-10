@@ -226,7 +226,8 @@ class ZeroBounce {
         void sendRequest(
             std::string urlPath,
             OnSuccessCallback<T> successCallback,
-            OnErrorCallback errorCallback
+            OnErrorCallback errorCallback,
+            bool messageOnlyIsFailure = false
         );
 
         /**
@@ -731,7 +732,7 @@ class ZeroBounce {
         /**
          * Validate a file in your Amazon S3 bucket (POST /validateS3file).
          *
-         * Shares the required fields with the other five S3 / SFTP jobs:
+         * Shares the required fields with the other seven S3 / SFTP jobs:
          * `fileName` and `returnUrl` are both required.
          */
         void validateS3File(
@@ -792,8 +793,10 @@ class ZeroBounce {
         /**
          * Validate a file from your SFTP/FTP server (POST /validateSFTPfile).
          *
-         * This is the one job whose `file_name` the docs list as optional: leave
-         * `options.fileName` unset to use the input bucket from your settings.
+         * The docs list `file_name` as optional for this job, but the live API
+         * requires it, so `options.fileName` and `options.returnUrl` are required
+         * here as on the other S3 / SFTP jobs; leaving either unset is rejected
+         * before a request is sent.
          */
         void validateSFTPFile(
             const BulkFileJobOptions& options,

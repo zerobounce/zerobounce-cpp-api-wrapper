@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -702,4 +703,16 @@ TEST(OfflineWarmup, AMalformedBodyDoesNotLeakAParserDump) {
     api.replyWith(200, "application/json", "<<<not-json>>>" + std::string(5000, 'x'));
     std::string message = captureError([&](auto ok, auto err) { client.getSeeds(ok, err); });
     EXPECT_NE(message.find("not valid JSON"), std::string::npos) << message;
+}
+
+TEST(OfflineWarmup, AnExceptionFromTheSuccessCallbackReachesTheCaller) {
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    int errors = 0;
+    EXPECT_THROW(
+        client.getSeedCount(
+            [](std::string) { throw std::logic_error("bug in the success callback"); },
+            [&](ZBErrorResponse) { ++errors; }),
+        std::logic_error);
+    EXPECT_EQ(errors, 0);
 }

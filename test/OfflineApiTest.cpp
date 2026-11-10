@@ -1,9 +1,11 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <random>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -248,6 +250,10 @@ private:
 
     static cpr::Response answer(const RecordedRequest& request) {
         const std::string& key = request.apiKey;
+        if (key.rfind("transport-throw-", 0) == 0) {
+            // A failure inside the transport, before any response exists.
+            throw std::runtime_error("connection reset by peer");
+        }
         cpr::Response response;
         if (key.rfind("html-403-", 0) == 0 || key.rfind("html-200-", 0) == 0) {
             response.status_code = key.rfind("html-403-", 0) == 0 ? 403 : 200;
@@ -955,6 +961,9 @@ TEST(OfflineApi, S3AndSftpFileJobsRejectInvalidArgumentsBeforeRequest) {
     client.scoreSFTPFile(missing, succeeded, expectFileName);
     client.emailFinderSFTPFile(missing, succeeded, expectFileName);
     client.domainSearchSFTPFile(missing, succeeded, expectFileName);
+    // The docs list file_name as optional for validateSFTPfile; the API and
+    // the SDK both require it.
+    client.validateSFTPFile(missing, succeeded, expectFileName);
 
     BulkFileJobOptions blank;
     blank.fileName = "   ";
@@ -986,7 +995,7 @@ TEST(OfflineApi, S3AndSftpFileJobsRejectInvalidArgumentsBeforeRequest) {
 
 // LIVE: POST /validateS3file without return_url answers
 // 400 {"error_message":"Provided return URL is not permitted: None"}, so the
-// two S3 jobs go through the same bulkFileJobFields helper as the other four
+// two S3 jobs go through the same bulkFileJobFields helper as the other six
 // and require it up front.
 TEST(OfflineApi, ValidateAndScoreS3FileShareTheBulkFileJobFields) {
     FakeApi api;
@@ -1365,6 +1374,52 @@ TEST(OfflineApi, BatchAccountErrorIsNotASuccess) {
     EXPECT_TRUE(errored);
 }
 
+TEST(OfflineApi, BatchAccountErrorCarriesTheHttpStatus) {
+    // The account-level failure arrives as an HTTP 200, so statusCode is 200,
+    // not the 0 that means the request never got an answer.
+    FakeApi api;
+    OfflineClient client(api, "batch-account-status");
+    bool errored = false;
+    client.validateBatch(
+        {{"a@example.com"}},
+        [&](ZBValidateBatchResponse response) { FAIL() << response.toString(); },
+        [&](ZBErrorResponse error) {
+            errored = true;
+            EXPECT_EQ(error.statusCode, 200);
+            EXPECT_NE(error.toString().find("statusCode=200"), std::string::npos);
+        }
+    );
+    EXPECT_TRUE(errored);
+}
+
+TEST(OfflineApi, GetFileJsonErrorBodyCarriesTheHttpStatus) {
+    // A getfile answered with an HTTP 200 JSON body that says success: false
+    // is an error, and the error reports that 200.
+    FakeApi api;
+    OfflineClient client(api, "success-false-getfile");
+    const std::string path = "../test/downloads/offline-json-error.csv";
+    std::filesystem::remove(path);
+
+    bool errored = false;
+    client.getFile("fid", path, [&](ZBGetFileResponse) { FAIL() << "JSON error was saved as a file"; },
+        [&](ZBErrorResponse error) {
+            errored = true;
+            auto captured = captureError(error);
+            EXPECT_EQ(captured.text, "File cannot be found.");
+            EXPECT_EQ(error.statusCode, 200);
+        });
+    EXPECT_TRUE(errored);
+
+    errored = false;
+    client.scoringGetFile("fid", path, [&](ZBGetFileResponse) { FAIL() << "JSON error was saved as a file"; },
+        [&](ZBErrorResponse error) {
+            errored = true;
+            EXPECT_EQ(error.statusCode, 200);
+        });
+    EXPECT_TRUE(errored);
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
 TEST(OfflineApi, BatchPartialErrorsStayOnTheSuccessResult) {
     FakeApi api;
     OfflineClient client(api, "batch-partial-user");
@@ -1651,4 +1706,127 @@ TEST(OfflineApi, ListEvaluatorUsesItsOwnBaseUrlAndEncodesFileId) {
     client.setListEvaluatorBaseUrl("https://example.com/custom/listevaluator");
     client.getListEvaluatorResult("fid", [&](std::string) {}, [&](ZBErrorResponse e) { FAIL() << e.toString(); });
     EXPECT_NE(onlyRequest(api).url.find("/custom/listevaluator/fid/"), std::string::npos);
+}
+
+TEST(OfflineApi, FindEmailResponseToStringEndsWithAClosingQuote) {
+    ZBFindEmailResponse response;
+    response.email = "a@example.com";
+    response.failureReason = "none";
+    // 2.2.0 and earlier streamed the multi-character constant '" }', which
+    // prints as a number, so the text ended with digits instead of " }.
+    EXPECT_EQ(response.toString(),
+        "ZBFindEmailResponse{ email=\"a@example.com\", emailConfidence=\"\", domain=\"\", "
+        "companyName=\"\", didYouMean=\"\", failureReason=\"none\" }");
+}
+
+namespace {
+
+/// Stands for a bug in the caller's own callback.
+struct CallerBug : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+}  // namespace
+
+TEST(OfflineApi, AnExceptionFromTheSuccessCallbackReachesTheCaller) {
+    FakeApi api;
+    OfflineClient client(api, "callback-key");
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) { ++errors; ADD_FAILURE() << error.toString(); };
+    auto buggy = [](auto) { throw CallerBug("bug in the success callback"); };
+    const std::string path = "../test/downloads/offline-callback.csv";
+
+    ZBValidateOptions post;
+    post.usePost = true;
+    EXPECT_THROW(client.getCredits(buggy, onError), CallerBug);
+    EXPECT_THROW(client.validate("a@example.com", "", buggy, onError), CallerBug);
+    EXPECT_THROW(client.validate("a@example.com", "", post, buggy, onError), CallerBug);
+    EXPECT_THROW(client.validateBatch({{"a@example.com", ""}}, buggy, onError), CallerBug);
+    EXPECT_THROW(client.scoreEmailPost("a@example.com", buggy, onError), CallerBug);
+    EXPECT_THROW(client.sendFile(kCsv, 1, SendFileOptions{}, buggy, onError), CallerBug);
+    EXPECT_THROW(client.getFile("fid", path, buggy, onError), CallerBug);
+    EXPECT_THROW(client.emailFinderGetFile("fid", path, buggy, onError), CallerBug);
+    EXPECT_THROW(client.sendDomainSearchFile(kCsv, 1, nullptr, buggy, onError), CallerBug);
+    EXPECT_THROW(client.listFilters(false, buggy, onError), CallerBug);
+    EXPECT_THROW(client.listS3files(std::nullopt, std::nullopt, buggy, onError), CallerBug);
+    EXPECT_THROW(client.getInboxPlacementProviders(buggy, onError), CallerBug);
+    // The error callback is not called on top of the success callback.
+    EXPECT_EQ(errors, 0);
+    std::filesystem::remove(path);
+}
+
+TEST(OfflineApi, AnExceptionFromTheErrorCallbackReachesTheCallerAfterOneCall) {
+    FakeApi api;
+    OfflineClient client(api, "success-false-key");
+    int errors = 0;
+    auto buggy = [&](ZBErrorResponse) {
+        ++errors;
+        throw CallerBug("bug in the error callback");
+    };
+    EXPECT_THROW(client.fileStatus("fid", [](ZBFileStatusResponse) { ADD_FAILURE() << "success"; }, buggy),
+        CallerBug);
+    EXPECT_THROW(client.validate("a@example.com", "", [](ZBValidateResponse) { ADD_FAILURE() << "success"; }, buggy),
+        CallerBug);
+    // Each call reported its error once, and was not re-reported as an
+    // "unexpected JSON response" when the callback threw.
+    EXPECT_EQ(errors, 2);
+}
+
+TEST(OfflineApi, ATransportFailureStillGoesToTheErrorCallback) {
+    FakeApi api;
+    OfflineClient client(api, "transport-throw-key");
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) {
+        ++errors;
+        EXPECT_FALSE(error.errors.empty());
+    };
+    ZBValidateOptions post;
+    post.usePost = true;
+    const std::string path = "../test/downloads/offline-transport.csv";
+    EXPECT_NO_THROW(client.getCredits([](ZBCreditsResponse) { ADD_FAILURE() << "success"; }, onError));
+    EXPECT_NO_THROW(client.validate("a@example.com", "", post,
+        [](ZBValidateResponse) { ADD_FAILURE() << "success"; }, onError));
+    EXPECT_NO_THROW(client.getFile("fid", path, [](ZBGetFileResponse) { ADD_FAILURE() << "success"; }, onError));
+    EXPECT_NO_THROW(client.emailFinderGetFile("fid", path,
+        [](ZBGetFileResponse) { ADD_FAILURE() << "success"; }, onError));
+    EXPECT_NO_THROW(client.listFilters(false, [](std::string) { ADD_FAILURE() << "success"; }, onError));
+    EXPECT_EQ(errors, 5);
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(OfflineApi, DomainFormatToStringNamesItsOwnClass) {
+    ZBDomainFormat format;
+    format.format = "first.last";
+    format.confidence = "high";
+    // It printed "ZBDomainSearchResponse{", the name of the class that holds it.
+    EXPECT_EQ(format.toString(), "ZBDomainFormat{ confidence=\"high\", format=\"first.last\"}");
+
+    ZBDomainSearchResponse response;
+    response.otherDomainFormats.push_back(format);
+    EXPECT_NE(response.toString().find("otherDomainFormats=[ZBDomainFormat{ "), std::string::npos)
+        << response.toString();
+}
+
+TEST(OfflineApi, GetFileSavesTheFileWithoutASuccessCallback) {
+    FakeApi api;
+    OfflineClient client(api, "no-callback");
+    const std::string path = "../test/downloads/offline-no-callback.csv";
+    const std::string scoringPath = "../test/downloads/offline-no-callback-scoring.csv";
+    std::filesystem::remove(path);
+    std::filesystem::remove(scoringPath);
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) { ++errors; ADD_FAILURE() << error.toString(); };
+
+    client.getFile("fid", path, nullptr, onError);
+    client.scoringGetFile("fid", scoringPath, nullptr, onError);
+
+    EXPECT_EQ(errors, 0);
+    for (const auto& saved : {path, scoringPath}) {
+        std::ifstream in(saved, std::ios::binary);
+        ASSERT_TRUE(in.good()) << saved << " was not written";
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(body, "email\nno-callback@example.com\n");
+        in.close();
+        std::filesystem::remove(saved);
+    }
 }

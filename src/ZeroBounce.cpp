@@ -271,6 +271,7 @@ void ZeroBounce::validate(
         if (options.callbackUrl.has_value()) {
             body += "&callback_url=" + urlEncode(options.callbackUrl.value());
         }
+        ZBOutcome<ZBValidateResponse> outcome;
         try {
             cpr::Response reqResponse = requestHandler->Post(
                 cpr::Url{apiBaseUrl + "/validate"},
@@ -281,17 +282,13 @@ void ZeroBounce::validate(
                 cpr::Body{body}
             );
             json parsed;
-            if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
-                return;
-            }
-            if (successCallback) {
-                successCallback(ZBValidateResponse::from_json(parsed));
+            if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+                outcome.succeed(ZBValidateResponse::from_json(parsed));
             }
         } catch (const std::exception&) {
-            if (errorCallback) {
-                errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
-            }
+            outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
         }
+        outcome.deliver(successCallback, errorCallback);
         return;
     }
 
@@ -337,6 +334,7 @@ void ZeroBounce::validateBatch(
     if (invalidApiKey(errorCallback)) return;
     if (!checkValidateBatchTimeout(options.timeout, errorCallback)) return;
 
+    ZBOutcome<ZBValidateBatchResponse> outcome;
     try {
         json payload;
         payload["api_key"] = apiKey;
@@ -377,29 +375,25 @@ void ZeroBounce::validateBatch(
         );
 
         json parsed;
-        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
-            return;
-        }
-        ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(parsed);
-        for (const auto& item : response.errors) {
-            if (item.emailAddress == "all") {
-                std::string message = item.error.empty()
-                    ? "Invalid API Key or your account ran out of credits"
-                    : item.error;
-                if (errorCallback) {
-                    errorCallback(ZBErrorResponse::parseError(message));
+        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+            ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(parsed);
+            for (const auto& item : response.errors) {
+                if (item.emailAddress == "all") {
+                    std::string message = item.error.empty()
+                        ? "Invalid API Key or your account ran out of credits"
+                        : item.error;
+                    // The API did answer, with an HTTP 200, so the status is
+                    // carried like on any other failed response.
+                    outcome.fail(ZBErrorResponse::parseError(message, reqResponse.status_code));
+                    break;
                 }
-                return;
             }
-        }
-        if (successCallback) {
-            successCallback(response);
+            outcome.succeed(std::move(response));
         }
     } catch (const std::exception&) {
-        if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
-        }
+        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
     }
+    outcome.deliver(successCallback, errorCallback);
 }
 
 void ZeroBounce::sendFile(
@@ -527,6 +521,7 @@ void ZeroBounce::scoreEmailPost(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZBOutcome<ZBScoreEmailResponse> outcome;
     try {
         std::string body =
             "api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email);
@@ -541,27 +536,25 @@ void ZeroBounce::scoreEmailPost(
         );
 
         json parsed;
-        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
-            return;
-        }
-        if (successCallback) {
-            successCallback(ZBScoreEmailResponse::from_json(parsed));
+        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+            outcome.succeed(ZBScoreEmailResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
-        }
+        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
     }
+    outcome.deliver(successCallback, errorCallback);
 }
 
 template <typename T>
 void ZeroBounce::sendRequest(
     std::string urlPath,
     OnSuccessCallback<T> successCallback,
-    OnErrorCallback errorCallback
+    OnErrorCallback errorCallback,
+    bool messageOnlyIsFailure
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZBOutcome<T> outcome;
     try {
         cpr::Response reqResponse = requestHandler->Get(
             cpr::Url{urlPath},
@@ -569,17 +562,16 @@ void ZeroBounce::sendRequest(
         );
 
         json parsed;
-        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
-            return;
-        }
-        if (successCallback) {
-            successCallback(T::from_json(parsed));
+        bool usable = messageOnlyIsFailure
+            ? zbReadNonMessageJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())
+            : zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink());
+        if (usable) {
+            outcome.succeed(T::from_json(parsed));
         }
     } catch (const std::exception&) {
-        if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
-        }
+        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
     }
+    outcome.deliver(successCallback, errorCallback);
 }
 
 void ZeroBounce::sendFileInternal(
@@ -592,6 +584,7 @@ void ZeroBounce::sendFileInternal(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZBOutcome<ZBSendFileResponse> outcome;
     try {
         std::string urlPath = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/sendfile";
 
@@ -634,17 +627,13 @@ void ZeroBounce::sendFileInternal(
         );
 
         json parsed;
-        if (!zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, errorCallback)) {
-            return;
-        }
-        if (successCallback) {
-            successCallback(ZBSendFileResponse::from_json(parsed));
+        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+            outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
-        }
+        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
     }
+    outcome.deliver(successCallback, errorCallback);
 }
 
 void ZeroBounce::fileStatusInternal(
@@ -676,6 +665,7 @@ void ZeroBounce::getFileInternal(
     GetFileOptions emptyOptions;
     const GetFileOptions& options = getFileOptionsPtr ? *getFileOptionsPtr : emptyOptions;
 
+    ZBOutcome<ZBGetFileResponse> outcome;
     try {
         const std::string base = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/getfile";
         cpr::Parameters params;
@@ -694,40 +684,34 @@ void ZeroBounce::getFileInternal(
         std::string rsp = reqResponse.text;
 
         if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
-            zbReportHttpError(reqResponse.status_code, rsp, errorCallback);
+            zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
+        } else if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
+            outcome.fail(ZBErrorResponse::parseError(
+                formatGetFileErrorMessage(rsp), reqResponse.status_code));
         } else {
-            if (successCallback) {
-                if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
-                    if (errorCallback) {
-                        errorCallback(ZBErrorResponse::parseError(formatGetFileErrorMessage(rsp)));
-                    }
-                } else {
-                    fs::path filePath(localDownloadPath);
+            // The file is saved whether or not a success callback was passed.
+            fs::path filePath(localDownloadPath);
 
-                    if (fs::is_directory(filePath)) {
-                        ZBErrorResponse errorResponse = ZBErrorResponse::parseError("Invalid file path");
-                        errorCallback(errorResponse);
-                        return;
-                    }
+            if (fs::is_directory(filePath)) {
+                outcome.fail(ZBErrorResponse::parseError("Invalid file path"));
+            } else {
+                fs::create_directories(filePath.parent_path());
 
-                    fs::create_directories(filePath.parent_path());
+                std::ofstream fileStream(filePath, std::ofstream::out | std::ofstream::binary);
 
-                    std::ofstream fileStream(filePath, std::ofstream::out | std::ofstream::binary);
+                fileStream.write(rsp.c_str(), static_cast<std::streamsize>(rsp.size()));
+                fileStream.close();
 
-                    fileStream.write(rsp.c_str(), static_cast<std::streamsize>(rsp.size()));
-                    fileStream.close();
-
-                    ZBGetFileResponse response;
-                    response.success = true;
-                    response.localFilePath = localDownloadPath;
-                    successCallback(response);
-                }
+                ZBGetFileResponse response;
+                response.success = true;
+                response.localFilePath = localDownloadPath;
+                outcome.succeed(response);
             }
         }
     } catch (const std::exception& e) {
-        ZBErrorResponse errorResponse = ZBErrorResponse::parseError(e.what());
-        errorCallback(errorResponse);
+        outcome.fail(ZBErrorResponse::parseError(e.what()));
     }
+    outcome.deliver(successCallback, errorCallback);
 }
 
 void ZeroBounce::deleteFileInternal(
@@ -772,7 +756,7 @@ void ZeroBounce::findEmailInternal(
     if (last_name.size() > 0) {
         urlStream << "&last_name=" << urlEncode(last_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback);
+    sendRequest(urlStream.str(), successCallback, errorCallback, true);
 }
 
 void ZeroBounce::findEmailByDomain(
@@ -849,7 +833,7 @@ void ZeroBounce::searchDomainInternal(
     if (company_name.size() > 0) {
         urlStream << "&company_name=" << urlEncode(company_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback);
+    sendRequest(urlStream.str(), successCallback, errorCallback, true);
 }
 
 void ZeroBounce::searchDomainByDomain(
@@ -890,7 +874,7 @@ void ZeroBounce::findEmail(
     if (last_name.size() > 0) {
         urlStream << "&last_name=" << urlEncode(last_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback);
+    sendRequest(urlStream.str(), successCallback, errorCallback, true);
 }
 
 void ZeroBounce::findEmail(
@@ -908,11 +892,13 @@ void ZeroBounce::findEmail(
 template void ZeroBounce::sendRequest<ZBFileStatusResponse>(
     std::string urlPath,
     OnSuccessCallback<ZBFileStatusResponse> successCallback,
-    OnErrorCallback errorCallback
+    OnErrorCallback errorCallback,
+    bool messageOnlyIsFailure
 );
 
 template void ZeroBounce::sendRequest<ZBDeleteFileResponse>(
     std::string urlPath,
     OnSuccessCallback<ZBDeleteFileResponse> successCallback,
-    OnErrorCallback errorCallback
+    OnErrorCallback errorCallback,
+    bool messageOnlyIsFailure
 );

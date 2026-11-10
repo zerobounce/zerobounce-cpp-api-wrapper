@@ -164,11 +164,20 @@ void validationFree() {
     ZeroBounce& zb = validationClient();
 
     long long before = -2;
-    check("getCredits returns a balance", [&]() -> std::string {
+    check("getCredits returns a positive balance", [&]() -> std::string {
         std::string problem = "no response";
         zb.getCredits([&](ZBCreditsResponse response) {
             before = response.credits;
-            problem.clear();
+            // The API answers an invalid key with a balance of -1, so anything
+            // that is not positive proves nothing about the rest of this suite.
+            if (before > 0) {
+                problem.clear();
+            } else if (before == -1) {
+                problem = "balance is -1: the API key is invalid";
+            } else {
+                problem = "could not read a usable credit balance (got " +
+                    std::to_string(before) + ")";
+            }
         }, [&](ZBErrorResponse error) { problem = error.toString(); });
         return problem;
     });

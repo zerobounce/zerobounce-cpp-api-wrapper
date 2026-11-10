@@ -10,7 +10,7 @@ std::string ZBFindEmailResponse::toString() {
         "domain=" << '"' << this->domain << '"' << ", "
         "companyName=" << '"' << this->companyName << '"' << ", "
         "didYouMean=" << '"' << this->didYouMean << '"' << ", "
-        "failureReason=" << '"' << this->failureReason << '" }';
+        "failureReason=" << '"' << this->failureReason << '"' << " }";
     return stringStream.str();
 }
 
