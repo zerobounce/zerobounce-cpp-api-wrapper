@@ -1830,3 +1830,281 @@ TEST(OfflineApi, GetFileSavesTheFileWithoutASuccessCallback) {
         std::filesystem::remove(saved);
     }
 }
+
+namespace {
+
+/** A client on the real RequestHandler, for the tests that need a socket. */
+class NetworkClient : public ZeroBounce {
+public:
+    explicit NetworkClient(const std::string& key) { initialize(key); }
+};
+
+std::filesystem::path freshTempDir(const std::string& name) {
+    auto dir = std::filesystem::temp_directory_path() /
+        ("zb-cpp-" + name + "-" + std::to_string(std::random_device{}()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+}  // namespace
+
+TEST(OfflineApi, AGetFileTransportFailureIsAnErrorAndWritesNoFile) {
+    // Nothing listens on port 1, so the connection is refused: HTTP status 0.
+    NetworkClient client("transport-key");
+    client.setBulkApiRootUrl("https://127.0.0.1:1");
+    client.setBulkApiBaseUrl("https://127.0.0.1:1/v2");
+    client.setBulkApiScoringBaseUrl("https://127.0.0.1:1/v2/scoring");
+    const auto dir = freshTempDir("refused");
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) {
+        ++errors;
+        EXPECT_EQ(error.statusCode, 0);
+        ASSERT_FALSE(error.errors.empty());
+        EXPECT_NE(error.errors.front().find("Could not reach ZeroBounce"), std::string::npos)
+            << error.errors.front();
+        EXPECT_EQ(error.toString().find("transport-key"), std::string::npos);
+    };
+    auto succeeded = [](ZBGetFileResponse) { ADD_FAILURE() << "success on a refused connection"; };
+    client.getFile("fid", (dir / "a.csv").string(), succeeded, onError);
+    client.scoringGetFile("fid", (dir / "b.csv").string(), succeeded, onError);
+    client.emailFinderGetFile("fid", (dir / "c.csv").string(), succeeded, onError);
+    client.domainSearchGetFile("fid", (dir / "d.csv").string(), succeeded, onError);
+    EXPECT_EQ(errors, 4);
+    for (const char* name : {"a.csv", "b.csv", "c.csv", "d.csv"}) {
+        EXPECT_FALSE(std::filesystem::exists(dir / name)) << name << " was written";
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AGetFileThatCannotBeWrittenIsAnError) {
+    FakeApi api;
+    OfflineClient client(api, "unwritable");
+    const auto dir = freshTempDir("unwritable");
+    // A regular file used as a directory: nothing can be created under it,
+    // whoever runs the test (root included).
+    const auto blocker = dir / "not-a-directory";
+    std::ofstream(blocker) << "x";
+    const std::string underAFile = (blocker / "out.csv").string();
+    // A file name longer than any file system allows, in a directory that exists.
+    const std::string tooLong = (dir / (std::string(300, 'x') + ".csv")).string();
+
+    for (const std::string& path : {underAFile, tooLong}) {
+        int errors = 0;
+        auto onError = [&](ZBErrorResponse error) {
+            ++errors;
+            EXPECT_FALSE(error.errors.empty());
+        };
+        auto succeeded = [&](ZBGetFileResponse) { ADD_FAILURE() << "success for " << path.substr(0, 80); };
+        client.getFile("fid", path, succeeded, onError);
+        client.scoringGetFile("fid", path, succeeded, onError);
+        client.emailFinderGetFile("fid", path, succeeded, onError);
+        client.domainSearchGetFile("fid", path, succeeded, onError);
+        EXPECT_EQ(errors, 4) << path.substr(0, 80);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, GetFileSavesToABareFileName) {
+    FakeApi api;
+    OfflineClient client(api, "bare-name");
+    const std::string name = "zb-bare-name-" + std::to_string(std::random_device{}()) + ".csv";
+    int saved = 0;
+    auto onError = [&](ZBErrorResponse error) { ADD_FAILURE() << error.toString(); };
+    client.getFile("fid", name, [&](ZBGetFileResponse) { ++saved; }, onError);
+    EXPECT_EQ(saved, 1);
+    EXPECT_TRUE(std::filesystem::exists(name));
+    std::filesystem::remove(name);
+    client.emailFinderGetFile("fid", name, [&](ZBGetFileResponse) { ++saved; }, onError);
+    EXPECT_EQ(saved, 2);
+    EXPECT_TRUE(std::filesystem::exists(name));
+    std::filesystem::remove(name);
+}
+
+TEST(OfflineApi, ADirtyKeyIsRejectedAndNeverSent) {
+    FakeApi api;
+    for (const std::string& dirty : {std::string(" padded"), std::string("trailing\n"), std::string("in\x01side")}) {
+        OfflineClient client(api, "clean-key");
+        // Re-initialising with a rejected key does not quietly keep the old one.
+        client.initialize(dirty);
+        int errors = 0;
+        auto onError = [&](ZBErrorResponse error) {
+            ++errors;
+            EXPECT_EQ(error.toString().find(dirty), std::string::npos);
+            EXPECT_NE(error.toString().find("surrounding whitespace or control characters"), std::string::npos)
+                << error.toString();
+        };
+        client.getCredits([](ZBCreditsResponse) { ADD_FAILURE() << "success"; }, onError);
+        client.validate("a@example.com", "", [](ZBValidateResponse) { ADD_FAILURE() << "success"; }, onError);
+        client.listFilters(false, [](std::string) { ADD_FAILURE() << "success"; }, onError);
+        client.getInboxPlacementProviders([](std::string) { ADD_FAILURE() << "success"; }, onError);
+        client.initialize(dirty, ZBApiURL::Default);
+        client.getCredits([](ZBCreditsResponse) { ADD_FAILURE() << "success"; }, onError);
+        EXPECT_EQ(errors, 5);
+        EXPECT_EQ(api.size(), 0u) << "a request was sent";
+        api.clear();
+    }
+}
+
+TEST(OfflineApi, BaseUrlSettersStripTrailingSlashes) {
+    FakeApi api;
+    OfflineClient client(api, "slash-key");
+    auto fail = [&](ZBErrorResponse e) { FAIL() << e.toString(); };
+    client.setBulkApiRootUrl("https://bulk.test.example//");
+    client.setBulkApiBaseUrl("https://bulk.test.example/v2/");
+    client.setBulkApiScoringBaseUrl("https://bulk.test.example/v2/scoring/");
+    client.setListEvaluatorBaseUrl("https://bulk.test.example/le/");
+    client.setInboxPlacementBaseUrl("https://bulk.test.example/ipt/");
+
+    client.fileStatus("fid", [&](ZBFileStatusResponse) {}, fail);
+    EXPECT_EQ(parseUrl(onlyRequest(api).url).path, "/v2/filestatus");
+    api.clear();
+    client.scoringFileStatus("fid", [&](ZBFileStatusResponse) {}, fail);
+    EXPECT_EQ(parseUrl(onlyRequest(api).url).path, "/v2/scoring/filestatus");
+    api.clear();
+    client.emailFinderFileStatus("fid", [&](ZBFileStatusResponse) {}, fail);
+    EXPECT_EQ(parseUrl(onlyRequest(api).url).path, "/email-finder/filestatus");
+    api.clear();
+    client.getListEvaluatorResult("fid", [&](std::string) {}, fail);
+    EXPECT_EQ(parseUrl(onlyRequest(api).url).path, "/le/fid/");
+    api.clear();
+    client.getInboxPlacementProviders([&](std::string) {}, fail);
+    EXPECT_EQ(onlyRequest(api).url, "https://bulk.test.example/ipt/providers");
+}
+
+TEST(OfflineApi, EveryPublicMethodIsHttpsOnly) {
+    FakeApi api;
+    OfflineClient client(api, "https-key");
+    // Every base URL a caller can set, set to plain http. The API host itself
+    // only comes from ZBApiURL, which has no http value.
+    client.setBulkApiRootUrl("http://bulk.test.example");
+    client.setBulkApiBaseUrl("HTTP://bulk.test.example/v2");
+    client.setBulkApiScoringBaseUrl("http://bulk.test.example/v2/scoring");
+    client.setListEvaluatorBaseUrl("http://bulk.test.example/v2/listevaluator");
+    client.setInboxPlacementBaseUrl("http://bulk.test.example/api/ipt");
+
+    int blocked = 0;
+    auto onError = [&](ZBErrorResponse error) {
+        ASSERT_FALSE(error.errors.empty());
+        EXPECT_EQ(error.errors.front(), "url must be an https:// URL");
+        ++blocked;
+    };
+    // A method on a settable base URL must report the error and send nothing.
+    auto expectBlocked = [&](const char* name, const std::function<void()>& call) {
+        api.clear();
+        int before = blocked;
+        call();
+        EXPECT_EQ(blocked, before + 1) << name;
+        EXPECT_EQ(api.size(), 0u) << name << " sent a request";
+    };
+    // A method on the API host still goes out, and over https.
+    auto expectHttps = [&](const char* name, const std::function<void()>& call) {
+        api.clear();
+        call();
+        auto records = api.take();
+        ASSERT_EQ(records.size(), 1u) << name;
+        EXPECT_EQ(records.front().url.rfind("https://", 0), 0u) << name << ": " << records.front().url;
+    };
+    auto any = [](auto) {};
+    auto ignore = [](ZBErrorResponse) {};
+    std::tm day{};
+    day.tm_year = 120;
+    day.tm_mday = 1;
+    SendFileOptions sendOptions;
+    GetFileOptions getOptions;
+    EmailFinderSendFileOptions finder;
+    finder.firstNameColumn = 2;
+    BulkFileJobOptions job;
+    job.fileName = "f.csv";
+    job.returnUrl = "https://example.com/done";
+    ValidateS3FileOptions s3;
+    s3.fileName = "f.csv";
+    s3.returnUrl = "https://example.com/done";
+    ScoreS3FileOptions score;
+    score.fileName = "f.csv";
+    score.returnUrl = "https://example.com/done";
+    ZBValidateOptions post;
+    post.usePost = true;
+    const std::string path = (std::filesystem::temp_directory_path() / "zb-cpp-https-sweep.csv").string();
+    std::filesystem::remove(path);
+
+    expectHttps("getCredits", [&] { client.getCredits(any, ignore); });
+    expectHttps("getApiUsage", [&] { client.getApiUsage(day, day, any, ignore); });
+    expectHttps("validate", [&] { client.validate("a@example.com", "", any, ignore); });
+    expectHttps("validate POST", [&] { client.validate("a@example.com", "", post, any, ignore); });
+    expectHttps("validateBatch", [&] { client.validateBatch({{"a@example.com"}}, any, ignore); });
+    expectHttps("getActivityData", [&] { client.getActivityData("a@example.com", any, ignore); });
+    expectHttps("scoreEmail", [&] { client.scoreEmail("a@example.com", any, ignore); });
+    expectHttps("scoreEmailPost", [&] { client.scoreEmailPost("a@example.com", any, ignore); });
+    expectHttps("addFilter", [&] { client.addFilter("allow", "domain", "example.com", any, ignore); });
+    expectHttps("listFilters", [&] { client.listFilters(false, any, ignore); });
+    expectHttps("listFilters POST", [&] { client.listFilters(true, any, ignore); });
+    expectHttps("deleteFilter", [&] { client.deleteFilter("allow", "domain", "example.com", any, ignore); });
+    expectHttps("findEmailByDomain/4", [&] { client.findEmailByDomain("example.com", "A", "B", "C", any, ignore); });
+    expectHttps("findEmailByDomain/3", [&] { client.findEmailByDomain("example.com", "A", "C", any, ignore); });
+    expectHttps("findEmailByDomain/2", [&] { client.findEmailByDomain("example.com", "A", any, ignore); });
+    expectHttps("findEmailByCompanyName/4", [&] { client.findEmailByCompanyName("Co", "A", "B", "C", any, ignore); });
+    expectHttps("findEmailByCompanyName/3", [&] { client.findEmailByCompanyName("Co", "A", "C", any, ignore); });
+    expectHttps("findEmailByCompanyName/2", [&] { client.findEmailByCompanyName("Co", "A", any, ignore); });
+    expectHttps("searchDomainByDomain", [&] { client.searchDomainByDomain("example.com", any, ignore); });
+    expectHttps("searchDomainByCompanyName", [&] { client.searchDomainByCompanyName("Co", any, ignore); });
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    expectHttps("findEmail/4", [&] { client.findEmail("example.com", "A", "B", "C", any, ignore); });
+    expectHttps("findEmail/3", [&] { client.findEmail("example.com", "A", "C", any, ignore); });
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+    expectBlocked("sendFile", [&] { client.sendFile(kCsv, 1, sendOptions, any, onError); });
+    expectBlocked("fileStatus", [&] { client.fileStatus("fid", any, onError); });
+    expectBlocked("getFile", [&] { client.getFile("fid", path, any, onError); });
+    expectBlocked("getFileWithOptions", [&] { client.getFileWithOptions("fid", path, getOptions, any, onError); });
+    expectBlocked("deleteFile", [&] { client.deleteFile("fid", any, onError); });
+    expectBlocked("scoringSendFile", [&] { client.scoringSendFile(kCsv, 1, sendOptions, any, onError); });
+    expectBlocked("scoringFileStatus", [&] { client.scoringFileStatus("fid", any, onError); });
+    expectBlocked("scoringGetFile", [&] { client.scoringGetFile("fid", path, any, onError); });
+    expectBlocked("scoringGetFileWithOptions", [&] {
+        client.scoringGetFileWithOptions("fid", path, getOptions, any, onError);
+    });
+    expectBlocked("scoringDeleteFile", [&] { client.scoringDeleteFile("fid", any, onError); });
+    expectBlocked("sendEmailFinderFile", [&] { client.sendEmailFinderFile(kCsv, 1, &finder, any, onError); });
+    expectBlocked("emailFinderFileStatus", [&] { client.emailFinderFileStatus("fid", any, onError); });
+    expectBlocked("emailFinderGetFile", [&] { client.emailFinderGetFile("fid", path, any, onError); });
+    expectBlocked("emailFinderDeleteFile", [&] { client.emailFinderDeleteFile("fid", any, onError); });
+    expectBlocked("sendDomainSearchFile", [&] { client.sendDomainSearchFile(kCsv, 1, nullptr, any, onError); });
+    expectBlocked("domainSearchFileStatus", [&] { client.domainSearchFileStatus("fid", any, onError); });
+    expectBlocked("domainSearchGetFile", [&] { client.domainSearchGetFile("fid", path, any, onError); });
+    expectBlocked("domainSearchDeleteFile", [&] { client.domainSearchDeleteFile("fid", any, onError); });
+    expectBlocked("sendListEvaluatorFile", [&] { client.sendListEvaluatorFile(kCsv, 1, any, onError); });
+    expectBlocked("getListEvaluatorResult", [&] { client.getListEvaluatorResult("fid", any, onError); });
+    expectBlocked("sendEvaluatedFile", [&] { client.sendEvaluatedFile("fid", any, onError); });
+    expectBlocked("validateS3File", [&] { client.validateS3File(s3, any, onError); });
+    expectBlocked("scoreS3File", [&] { client.scoreS3File(score, any, onError); });
+    expectBlocked("exportS3File", [&] { client.exportS3File("fid", std::nullopt, any, onError); });
+    expectBlocked("listS3files", [&] { client.listS3files(std::nullopt, std::nullopt, any, onError); });
+    expectBlocked("emailFinderS3File", [&] { client.emailFinderS3File(job, any, onError); });
+    expectBlocked("domainSearchS3File", [&] { client.domainSearchS3File(job, any, onError); });
+    expectBlocked("validateSFTPFile", [&] { client.validateSFTPFile(job, any, onError); });
+    expectBlocked("scoreSFTPFile", [&] { client.scoreSFTPFile(job, any, onError); });
+    expectBlocked("emailFinderSFTPFile", [&] { client.emailFinderSFTPFile(job, any, onError); });
+    expectBlocked("domainSearchSFTPFile", [&] { client.domainSearchSFTPFile(job, any, onError); });
+    expectBlocked("exportSFTPFile", [&] { client.exportSFTPFile("fid", std::nullopt, any, onError); });
+    expectBlocked("getInboxPlacementProviders", [&] { client.getInboxPlacementProviders(any, onError); });
+    expectBlocked("getInboxPlacementTestTypes", [&] { client.getInboxPlacementTestTypes(any, onError); });
+    expectBlocked("createInboxPlacementTest", [&] {
+        client.createInboxPlacementTest("t", CreateInboxPlacementTestOptions{}, any, onError);
+    });
+    expectBlocked("getInboxPlacementTest", [&] { client.getInboxPlacementTest("t1", any, onError); });
+    expectBlocked("listInboxPlacementTests", [&] {
+        client.listInboxPlacementTests(ListInboxPlacementTestsOptions{}, any, onError);
+    });
+    expectBlocked("deleteInboxPlacementTest", [&] { client.deleteInboxPlacementTest("t1", any, onError); });
+    expectBlocked("getInboxPlacementWebhook", [&] { client.getInboxPlacementWebhook(any, onError); });
+    expectBlocked("setInboxPlacementWebhook", [&] {
+        client.setInboxPlacementWebhook("https://example.com/hook", any, onError);
+    });
+    EXPECT_FALSE(std::filesystem::exists(path));
+}

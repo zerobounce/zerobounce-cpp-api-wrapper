@@ -66,10 +66,12 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/libcpr/cpr.git
     GIT_TAG 1.11.2
 )
-# Download and build nlohmann_json
+# Download and build nlohmann_json. The hash is the SHA-256 the v3.11.2
+# release notes publish for json.tar.xz.
 FetchContent_Declare(
     nlohmann_json
     URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    URL_HASH SHA256=8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f
 )
 # Download and build googletest
 FetchContent_Declare(
@@ -90,7 +92,8 @@ target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr nlohmann_json::nlohmann_json)
 
 enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp)
+add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp
+    test/TransportTest.cpp)
 target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1)
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
 
