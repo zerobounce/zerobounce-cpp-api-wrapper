@@ -212,6 +212,14 @@ bool warmupSend(
         return false;
     }
 
+    // No response (status 0: refused, timed out, TLS failure) or one cut
+    // short is an error. Only statuses of 300 and up used to be, so a failed
+    // connection reached the success callback with the payload "null".
+    if (zbTransportFailed(response)) {
+        reportError(errorCallback, redact(zbTransportErrorMessage(response), secrets), 0);
+        return false;
+    }
+
     out.statusCode = response.status_code;
     out.body = response.text;
     auto typeIt = response.header.find("Content-Type");

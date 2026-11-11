@@ -716,3 +716,28 @@ TEST(OfflineWarmup, AnExceptionFromTheSuccessCallbackReachesTheCaller) {
         std::logic_error);
     EXPECT_EQ(errors, 0);
 }
+
+TEST(OfflineWarmup, NoResponseIsAnErrorNotANullSuccess) {
+    // The real request handler: nothing listens on port 1, so the connection
+    // is refused and there is no HTTP status (0). That used to reach the
+    // success callback with the payload "null".
+    ZeroBounceWarmup client;
+    client.initialize("refused-warmup-key", "https://127.0.0.1:1");
+    ASSERT_TRUE(client.isReady());
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) {
+        ++errors;
+        EXPECT_EQ(error.statusCode, 0);
+        const std::string message = error.toString();
+        EXPECT_NE(message.find("Could not reach ZeroBounce"), std::string::npos) << message;
+        EXPECT_EQ(message.find("refused-warmup-key"), std::string::npos) << message;
+    };
+    auto unexpected = [](std::string payload) { ADD_FAILURE() << "success with payload " << payload; };
+    client.getSeeds(unexpected, onError);
+    client.deleteSendingAccount("a@example.com", unexpected, onError);
+    client.updateSendingAccount("a@example.com", 1, 4, false, unexpected, onError);
+    client.setEngagementRule("a@example.com", 1, unexpected, onError);
+    client.createCustomEngagement("a@example.com", 10, 10, 5, unexpected, onError);
+    client.downloadSeeds(unexpected, onError);
+    EXPECT_EQ(errors, 6);
+}

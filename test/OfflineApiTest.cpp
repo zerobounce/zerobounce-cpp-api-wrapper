@@ -1,5 +1,7 @@
 #include <chrono>
+#include <csignal>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -14,6 +16,10 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZeroBounce.h"
+
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -2108,3 +2114,129 @@ TEST(OfflineApi, EveryPublicMethodIsHttpsOnly) {
     });
     EXPECT_FALSE(std::filesystem::exists(path));
 }
+
+namespace {
+
+/** Answers every request with one scripted HTTP 200 response. */
+class ScriptedApi : public BaseRequestHandler {
+public:
+    std::string body;
+    std::string contentType;
+
+protected:
+    cpr::Response reply() const {
+        cpr::Response response;
+        response.status_code = 200;
+        response.text = body;
+        response.header["Content-Type"] = contentType;
+        return response;
+    }
+    cpr::Response doGet(const cpr::Url&) override { return reply(); }
+    cpr::Response doGet(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Multipart&) override { return reply(); }
+};
+
+class ScriptedClient : public ZeroBounce {
+public:
+    explicit ScriptedClient(ScriptedApi& api) {
+        initialize("scripted-key");
+        requestHandler = &api;
+    }
+};
+
+}  // namespace
+
+TEST(OfflineApi, AJsonObjectInPlaceOfAFileIsAnErrorWhateverItsKeysOrContentType) {
+    // LIVE: an invalid key answers getfile-style calls with {"Message": ...}
+    // or {"Error": ...} on an HTTP 200. Any JSON object is the API saying why
+    // there is no file, with a JSON content type or not; the email finder and
+    // domain search downloads used to check neither.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    const auto dir = freshTempDir("json-body");
+    for (const char* body : {R"({"Message":"File not found"})", R"({"Error":"Invalid API key"})",
+                             R"( {"error":"x"})", R"({"file_id":"x"})"}) {
+        for (const char* type : {"text/csv", "application/json", "application/octet-stream"}) {
+            api.body = body;
+            api.contentType = type;
+            int errors = 0;
+            auto onError = [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << body << " " << type;
+            };
+            auto saved = [&](ZBGetFileResponse) { ADD_FAILURE() << body << " " << type << " was saved"; };
+            const std::string path = (dir / "out.csv").string();
+            client.getFile("fid", path, saved, onError);
+            client.scoringGetFile("fid", path, saved, onError);
+            client.emailFinderGetFile("fid", path, saved, onError);
+            client.domainSearchGetFile("fid", path, saved, onError);
+            EXPECT_EQ(errors, 4) << body << " " << type;
+            EXPECT_FALSE(std::filesystem::exists(path)) << body << " " << type;
+        }
+    }
+    // Its message is the API's.
+    api.body = R"({"Message":"File not found"})";
+    api.contentType = "text/csv";
+    std::string message;
+    client.getFile("fid", (dir / "out.csv").string(), nullptr,
+                   [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+    EXPECT_EQ(message, "File not found");
+    EXPECT_TRUE(ZeroBounce::getFileJsonIndicatesError(R"({"Error":"Invalid API key"})"));
+    std::filesystem::remove_all(dir);
+}
+
+#ifndef _WIN32
+
+TEST(OfflineApi, AShortWriteIsAnErrorAndLeavesNoPartialFile) {
+    // A file size limit stops the write part-way (as a full disk would): the
+    // download is an error and the truncated file is removed.
+    FakeApi api;
+    OfflineClient client(api, "short-write-key");
+    const auto dir = freshTempDir("short-write");
+    const std::vector<std::pair<std::string, std::function<void(const std::string&, OnErrorCallback)>>> downloads{
+        {"getFile", [&](const std::string& p, OnErrorCallback e) { client.getFile("fid", p, nullptr, e); }},
+        {"scoringGetFile", [&](const std::string& p, OnErrorCallback e) { client.scoringGetFile("fid", p, nullptr, e); }},
+        {"emailFinderGetFile", [&](const std::string& p, OnErrorCallback e) {
+            client.emailFinderGetFile("fid", p, nullptr, e);
+        }},
+        {"domainSearchGetFile", [&](const std::string& p, OnErrorCallback e) {
+            client.domainSearchGetFile("fid", p, nullptr, e);
+        }},
+    };
+    struct Outcome {
+        int errors = 0;
+        std::string message;
+        bool exists = false;
+    };
+    std::vector<Outcome> outcomes(downloads.size());
+
+    rlimit saved{};
+    ASSERT_EQ(::getrlimit(RLIMIT_FSIZE, &saved), 0);
+    auto previous = std::signal(SIGXFSZ, SIG_IGN);
+    rlimit tight = saved;
+    tight.rlim_cur = 8;  // the body is "email\nshort-write-key@example.com\n"
+    ASSERT_EQ(::setrlimit(RLIMIT_FSIZE, &tight), 0);
+    // Nothing is printed until the limit is lifted again: a test log that is a
+    // file is under the same limit.
+    for (size_t i = 0; i < downloads.size(); ++i) {
+        const std::string path = (dir / (downloads[i].first + ".csv")).string();
+        downloads[i].second(path, [&, i](ZBErrorResponse error) {
+            outcomes[i].errors++;
+            outcomes[i].message = error.errors.empty() ? "" : error.errors.front();
+        });
+        outcomes[i].exists = std::filesystem::exists(path);
+    }
+    ::setrlimit(RLIMIT_FSIZE, &saved);
+    std::signal(SIGXFSZ, previous);
+
+    for (size_t i = 0; i < downloads.size(); ++i) {
+        EXPECT_EQ(outcomes[i].errors, 1) << downloads[i].first;
+        EXPECT_NE(outcomes[i].message.find("Could not write"), std::string::npos)
+            << downloads[i].first << ": " << outcomes[i].message;
+        EXPECT_FALSE(outcomes[i].exists) << downloads[i].first << " left a truncated file";
+    }
+    std::filesystem::remove_all(dir);
+}
+#endif

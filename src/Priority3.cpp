@@ -260,9 +260,10 @@ void ZeroBounce::emailFinderGetFile(
         std::string rsp = reqResponse.text;
         std::string contentType = reqResponse.header["Content-Type"];
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
-            // Nothing is written for a transport failure, a redirect or an HTTP error.
+            // Nothing is written for a transport failure, a body cut short, a
+            // redirect or an HTTP error.
         } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
-                || ZeroBounce::getFileJsonIndicatesError(rsp)) {
+                || zbDownloadBodyIsJson(rsp, contentType)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
@@ -343,9 +344,10 @@ void ZeroBounce::domainSearchGetFile(
         std::string rsp = reqResponse.text;
         std::string contentType = reqResponse.header["Content-Type"];
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
-            // Nothing is written for a transport failure, a redirect or an HTTP error.
+            // Nothing is written for a transport failure, a body cut short, a
+            // redirect or an HTTP error.
         } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
-                || ZeroBounce::getFileJsonIndicatesError(rsp)) {
+                || zbDownloadBodyIsJson(rsp, contentType)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
