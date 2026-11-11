@@ -619,3 +619,7 @@ zb->setBulkApiRootUrl("https://bulkapi.zerobounce.net");
 zb->setBulkApiBaseUrl("https://bulkapi.zerobounce.net/v2");
 zb->setBulkApiScoringBaseUrl("https://bulkapi.zerobounce.net/v2/scoring");
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
