@@ -290,31 +290,61 @@ bool zbCheckRequestUrl(
     return false;
 }
 
+bool zbTransportFailed(const cpr::Response& response) {
+    if (response.status_code == 0 || response.error) {
+        return true;
+    }
+    // A body shorter than its Content-Length was cut off. libcurl reports
+    // that itself (CURLE_PARTIAL_FILE); this also covers a request handler
+    // that does not pass the transport error on. A compressed body is
+    // measured after decoding, so it is not compared.
+    auto length = response.header.find("Content-Length");
+    if (length == response.header.end() || response.header.count("Content-Encoding") != 0) {
+        return false;
+    }
+    try {
+        size_t used = 0;
+        unsigned long long expected = std::stoull(length->second, &used);
+        return used > 0 && expected > response.text.size();
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::string zbTransportErrorMessage(const cpr::Response& response) {
+    std::string detail = response.error.message;
+    if (response.status_code == 0) {
+        return "Could not reach ZeroBounce: " + (detail.empty() ? std::string("no response") : detail);
+    }
+    return "The response from ZeroBounce was cut short: " +
+        (detail.empty() ? std::string("the body is shorter than its Content-Length") : detail);
+}
+
 bool zbReportFailedDownload(
     const cpr::Response& response,
     const std::string& apiKey,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
-    if (response.status_code >= 200 && response.status_code <= 299) {
-        return false;
-    }
-    if (response.status_code == 0 || response.error) {
-        // No response at all: the connection was refused, timed out or failed
-        // its TLS handshake. Used to be saved as an empty file and reported
-        // as a success.
-        std::string message = response.error.message.empty()
-            ? std::string("no response")
-            : response.error.message;
+    // Checked before the status: a body cut short after a 200 header (the
+    // connection closed, or the read timed out) has a 2xx status and a
+    // transport error, and used to be saved as though it were the whole file.
+    if (zbTransportFailed(response)) {
+        // No response, or only part of one: the connection was refused,
+        // closed early, timed out or failed its TLS handshake.
+        std::string message = zbTransportErrorMessage(response);
         if (!apiKey.empty()) {
             for (size_t at = 0; (at = message.find(apiKey, at)) != std::string::npos; at += 3) {
                 message.replace(at, apiKey.size(), "***");
             }
         }
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(
-                "Could not reach ZeroBounce: " + message, response.status_code));
+            // Status 0: no complete HTTP response arrived.
+            errorCallback(ZBErrorResponse::parseError(message, 0));
         }
         return true;
+    }
+    if (response.status_code >= 200 && response.status_code <= 299) {
+        return false;
     }
     if (response.status_code >= 300 && response.status_code < 400) {
         if (errorCallback) {
@@ -325,6 +355,14 @@ bool zbReportFailedDownload(
     }
     zbReportHttpError(response.status_code, response.text, errorCallback);
     return true;
+}
+
+bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentType) {
+    if (lowerCopy(contentType).find("application/json") != std::string::npos) {
+        return true;
+    }
+    auto first = std::find_if(body.begin(), body.end(), [](unsigned char c) { return !std::isspace(c); });
+    return first != body.end() && *first == '{';
 }
 
 bool zbSaveDownload(
@@ -358,6 +396,9 @@ bool zbSaveDownload(
     out.write(body.data(), static_cast<std::streamsize>(body.size()));
     out.close();
     if (!out) {
+        // A short write (a full disk, a file size limit) leaves part of the
+        // file behind; it is removed rather than left looking like a result.
+        fs::remove(filePath, ec);
         return fail("Could not write " + localPath);
     }
     return true;

@@ -72,9 +72,21 @@ bool zbCheckRequestUrl(
 );
 
 /**
- * For the file downloads: reports a response that is not a 2xx -- no response
- * at all (a transport failure has status 0), a redirect or an HTTP error -- and
- * returns true. The transport error text has the API key masked out.
+ * Whether a request failed in transport: no response at all (status 0), or a
+ * transport error such as a timeout or a connection closed part-way through
+ * the body, or a body shorter than its Content-Length. The status can be 2xx
+ * when the body was cut short.
+ */
+bool zbTransportFailed(const cpr::Response& response);
+
+/** A short message for a response zbTransportFailed accepts. Not redacted. */
+std::string zbTransportErrorMessage(const cpr::Response& response);
+
+/**
+ * For the file downloads: reports a response that is not a complete 2xx -- a
+ * transport failure, a body cut short (both with status 0), a redirect or an
+ * HTTP error -- and returns true. The transport error text has the API key
+ * masked out.
  */
 bool zbReportFailedDownload(
     const cpr::Response& response,
@@ -83,9 +95,16 @@ bool zbReportFailedDownload(
 );
 
 /**
+ * Whether a download's body is the API saying why there is no file: a JSON
+ * content type, or a body that is a JSON object (a result file never starts
+ * with "{"), whatever its keys.
+ */
+bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentType);
+
+/**
  * Writes a downloaded file, creating its parent directories. Reports a path
  * that is a directory, or a file that cannot be created or written, and
- * returns false.
+ * returns false. A file that could only be written in part is removed.
  */
 bool zbSaveDownload(
     const std::string& localPath,

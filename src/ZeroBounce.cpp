@@ -49,22 +49,6 @@ void ZeroBounce::initialize(
     this->apiBaseUrl = baseURLStringFromZBApiURL(apiBaseUrl);
 }
 
-static bool contentTypeIncludesApplicationJson(const std::string& contentType) {
-    std::string lower;
-    lower.reserve(contentType.size());
-    for (unsigned char c : contentType) {
-        lower += static_cast<char>(std::tolower(c));
-    }
-    return lower.find("application/json") != std::string::npos;
-}
-
-static bool shouldTreatGetFileBodyAsError(const std::string& body, const std::string& contentType) {
-    if (contentTypeIncludesApplicationJson(contentType)) {
-        return true;
-    }
-    return ZeroBounce::getFileJsonIndicatesError(body);
-}
-
 bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
     std::size_t i = 0;
     while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) {
@@ -90,7 +74,7 @@ bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
                 }
             }
         }
-        for (const char* k : {"message", "error", "error_message"}) {
+        for (const char* k : {"message", "error", "error_message", "Message", "Error"}) {
             if (!o.contains(k)) {
                 continue;
             }
@@ -114,7 +98,7 @@ std::string ZeroBounce::formatGetFileErrorMessage(const std::string& body) {
         if (!o.is_object()) {
             return body.empty() ? "Invalid getfile response" : body;
         }
-        for (const char* k : {"message", "error", "error_message"}) {
+        for (const char* k : {"message", "error", "error_message", "Message", "Error"}) {
             if (!o.contains(k)) {
                 continue;
             }
@@ -704,10 +688,13 @@ void ZeroBounce::getFileInternal(
         std::string rsp = reqResponse.text;
 
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
-            // No file is written for a transport failure, a redirect or an HTTP error.
+            // No file is written for a transport failure, a body cut short, a
+            // redirect or an HTTP error.
         } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
-        } else if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
+        } else if (zbDownloadBodyIsJson(rsp, contentType)) {
+            // A JSON body, whatever its keys or content type, is the API
+            // saying why there is no file.
             outcome.fail(ZBErrorResponse::parseError(
                 formatGetFileErrorMessage(rsp), reqResponse.status_code));
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {

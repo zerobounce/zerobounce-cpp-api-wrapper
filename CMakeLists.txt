@@ -44,6 +44,10 @@ endforeach()
 foreach(_zb_curl_dependency CURL_USE_LIBSSH2 CURL_USE_LIBSSH CURL_USE_GSSAPI USE_NGHTTP2 USE_LIBIDN2)
     set(${_zb_curl_dependency} OFF CACHE BOOL "Set OFF for the bundled libcurl by ZeroBounce")
 endforeach()
+# zlib too: the SDK never asks for compressed responses. Left at curl's AUTO,
+# the macOS build linked the system /usr/lib/libz while Linux, without zlib
+# headers, built without it (and cpr fetched zlib-ng for it).
+set(CURL_ZLIB OFF CACHE STRING "Build the bundled libcurl with zlib (AUTO, ON or OFF)")
 set(CURL_BROTLI OFF CACHE STRING "Build the bundled libcurl with brotli (AUTO, ON or OFF)")
 set(CURL_ZSTD OFF CACHE STRING "Build the bundled libcurl with zstd (AUTO, ON or OFF)")
 # curl 8.15 removed Secure Transport, the TLS backend cpr 1.11.2 picks on macOS.

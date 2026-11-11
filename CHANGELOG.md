@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The bundled libcurl is built without zlib (`CURL_ZLIB` defaults to `OFF`, as in the C SDK; `-DCURL_ZLIB=ON` still turns it on). Left at curl's `AUTO`, the macOS build linked the system `/usr/lib/libz` while a Linux machine without zlib headers built without it, and cpr fetched zlib-ng for it either way. The SDK never asks for compressed responses. Build-only: no API change.
+
+### Fixed
+
+- A file download cut short after its HTTP 200 header was saved and reported as a success. When the connection closed part-way through the body (for example after 26 of 1000 bytes), or the body stalled past the read timeout, `getFile`, `getFileWithOptions`, `scoringGetFile`, `scoringGetFileWithOptions`, `emailFinderGetFile` and `domainSearchGetFile` wrote the partial file and called the success callback. They now call the error callback with `The response from ZeroBounce was cut short: <transport error>` and `statusCode` 0, and write nothing. A body shorter than its `Content-Length` is treated the same way even when the request handler reports no transport error.
+- `ZeroBounceWarmup` reported a request that got no response at all (connection refused, timed out, failed TLS handshake: HTTP status 0) as a success: the JSON calls passed the payload `null` to the success callback. Every Warmup call now reports `Could not reach ZeroBounce: <transport error>` with `statusCode` 0 to the error callback, and a response cut short is reported as above. The CSV downloads (`downloadSeeds`, `downloadStatistics`) already failed, with `Empty response from ZeroBounce (HTTP 0)`; they now give the same message.
+- A download answered with a JSON object instead of a file was saved as the file when its keys were `Message` or `Error` (as an invalid key answers) or other keys, unless the content type was `application/json`; `emailFinderGetFile` and `domainSearchGetFile` saved it even with that content type. Every download now reports any JSON object body, whatever its keys or content type, to the error callback with the HTTP status, and writes nothing, as the Pascal and iOS SDKs do. `ZeroBounce::getFileJsonIndicatesError` and `formatGetFileErrorMessage` also recognise the `Message` and `Error` keys.
+- When a downloaded file could be written only in part (a full disk, a file size limit), the error was reported but the truncated file was left behind. It is now removed.
+
 ## [3.0.0] - 2026-11-12
 
 ### Breaking
