@@ -377,8 +377,8 @@ After checking out the repo, build the library then run tests.
 You should see an output like this
 
 ```bash
-[==========] 138 tests from 3 test suites ran. (936 ms total)
-[  PASSED  ] 138 tests.
+[==========] N tests from 4 test suites ran. (… ms total)
+[  PASSED  ] N tests.
 ```
 
 ## Validate options
@@ -513,7 +513,10 @@ zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
 
 The list evaluator and the Inbox Placement Tester have their own base URLs,
 separate from the main and bulk hosts. The three bulk hosts have setters of
-their own, so every bulk endpoint can be pointed at a test host.
+their own, so every bulk endpoint can be pointed at a test host. The setters
+strip trailing slashes, and every base URL must be `https://`: a call to any
+other URL reports `url must be an https:// URL` to its error callback and sends
+nothing.
 
 ```cpp
 ZeroBounce* zb = ZeroBounce::getInstance();

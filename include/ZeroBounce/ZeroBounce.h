@@ -1,6 +1,7 @@
 #ifndef ZEROBOUNCE_H
 #define ZEROBOUNCE_H
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -155,37 +156,69 @@ class BaseRequestHandler {
         // API. They have defaults rather than being pure so existing
         // subclasses keep compiling.
         virtual cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Put(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Put(url, header, body, cpr::Timeout{DefaultTimeoutMs},
+                cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
         virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Delete(url, header, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Delete(url, header, cpr::Timeout{DefaultTimeoutMs},
+                cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
         // The Warmup API's DELETE /custom-engagement takes a JSON body.
         virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Delete(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Delete(url, header, body, cpr::Timeout{DefaultTimeoutMs},
+                cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
+
+    public:
+        /** The longest one request may take, connecting included (120 s). */
+        static constexpr std::int32_t DefaultTimeoutMs = 120000;
+        /** The longest connecting may take, the TLS handshake included (30 s). */
+        static constexpr std::int32_t DefaultConnectTimeoutMs = 30000;
 };
 
 /**
  * Class used to handle http requests made with libcpr.
+ *
+ * Every request has a total timeout and a connect timeout, and redirects are
+ * never followed: a redirect would send the API key on to another host.
  */
 class RequestHandler : public BaseRequestHandler {
+    public:
+        RequestHandler() = default;
+
+        /** The same handler with other timeouts, in milliseconds. */
+        RequestHandler(std::int32_t timeoutMs, std::int32_t connectTimeoutMs)
+            : timeout(timeoutMs), connectTimeout(connectTimeoutMs) {}
+
     protected:
         cpr::Response doGet(const cpr::Url& url) {
-            return cpr::Get(url, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Get(url, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Get(url, header, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Get(url, header, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) {
-            return cpr::Get(url, parameters, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Get(url, parameters, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Post(url, header, body, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Post(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
-            return cpr::Post(url, header, multipart, cpr::Timeout{120000}, cpr::Redirect{false});
+            return cpr::Post(url, header, multipart, timeout, connectTimeout, cpr::Redirect{false});
         }
+        cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
+            return cpr::Put(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
+        }
+        cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
+            return cpr::Delete(url, header, timeout, connectTimeout, cpr::Redirect{false});
+        }
+        cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
+            return cpr::Delete(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
+        }
+
+    private:
+        cpr::Timeout timeout{DefaultTimeoutMs};
+        cpr::ConnectTimeout connectTimeout{DefaultConnectTimeoutMs};
 };
 
 /**
@@ -353,6 +386,11 @@ class ZeroBounce {
 
         /**
          * Initializes the SDK with the default base URL.
+         *
+         * A key with surrounding whitespace or control characters is rejected:
+         * every call then reports "api_key has surrounding whitespace or
+         * control characters" to its error callback and sends nothing (the
+         * previous key is not kept).
          *
          * @param apiKey the API key
          */
@@ -838,6 +876,10 @@ class ZeroBounce {
             OnSuccessCallback<ZBSendFileResponse> successCallback,
             OnErrorCallback errorCallback
         );
+
+        // The base URL setters below strip trailing slashes. Every request is
+        // HTTPS only: a call whose URL is not https:// reports
+        // "url must be an https:// URL" to its error callback and sends nothing.
 
         /** Override the list evaluator base URL. */
         void setListEvaluatorBaseUrl(const std::string& url);

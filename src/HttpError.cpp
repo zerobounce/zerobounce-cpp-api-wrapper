@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iterator>
 
@@ -251,6 +253,112 @@ bool zbReadNonMessageJsonResponse(
     if (jsonMessageOnly(out)) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
+    }
+    return true;
+}
+
+const char* const kZbDirtyApiKeyMessage = "api_key has surrounding whitespace or control characters";
+
+bool zbApiKeyIsClean(const std::string& apiKey) {
+    if (apiKey != trimCopy(apiKey)) {
+        return false;
+    }
+    return std::none_of(apiKey.begin(), apiKey.end(), [](unsigned char c) {
+        return std::iscntrl(c) != 0;
+    });
+}
+
+std::string zbNormalizeBaseUrl(std::string url) {
+    while (!url.empty() && url.back() == '/') {
+        url.pop_back();
+    }
+    return url;
+}
+
+bool zbCheckRequestUrl(
+    const std::string& url,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    // The API key travels in the query string, a form field or a header, so a
+    // plain-http URL would put it on the wire in the clear.
+    if (lowerCopy(url.substr(0, 8)) == "https://") {
+        return true;
+    }
+    if (errorCallback) {
+        errorCallback(ZBErrorResponse::parseError("url must be an https:// URL"));
+    }
+    return false;
+}
+
+bool zbReportFailedDownload(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    if (response.status_code >= 200 && response.status_code <= 299) {
+        return false;
+    }
+    if (response.status_code == 0 || response.error) {
+        // No response at all: the connection was refused, timed out or failed
+        // its TLS handshake. Used to be saved as an empty file and reported
+        // as a success.
+        std::string message = response.error.message.empty()
+            ? std::string("no response")
+            : response.error.message;
+        if (!apiKey.empty()) {
+            for (size_t at = 0; (at = message.find(apiKey, at)) != std::string::npos; at += 3) {
+                message.replace(at, apiKey.size(), "***");
+            }
+        }
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(
+                "Could not reach ZeroBounce: " + message, response.status_code));
+        }
+        return true;
+    }
+    if (response.status_code >= 300 && response.status_code < 400) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(
+                "ZeroBounce returned a redirect, which this client does not follow.", response.status_code));
+        }
+        return true;
+    }
+    zbReportHttpError(response.status_code, response.text, errorCallback);
+    return true;
+}
+
+bool zbSaveDownload(
+    const std::string& localPath,
+    const std::string& body,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    namespace fs = std::filesystem;
+    auto fail = [&](const std::string& message) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(message));
+        }
+        return false;
+    };
+    const fs::path filePath(localPath);
+    std::error_code ec;
+    if (localPath.empty() || fs::is_directory(filePath, ec)) {
+        return fail("Invalid file path");
+    }
+    // A bare file name has no parent directory to create.
+    if (!filePath.parent_path().empty()) {
+        fs::create_directories(filePath.parent_path(), ec);
+        if (ec) {
+            return fail("Could not create the directory for " + localPath + ": " + ec.message());
+        }
+    }
+    std::ofstream out(filePath, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+    if (!out) {
+        return fail("Could not open " + localPath + " for writing");
+    }
+    out.write(body.data(), static_cast<std::streamsize>(body.size()));
+    out.close();
+    if (!out) {
+        return fail("Could not write " + localPath);
     }
     return true;
 }

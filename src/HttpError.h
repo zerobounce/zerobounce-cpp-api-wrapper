@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZBErrorResponse.h"
@@ -42,6 +43,53 @@ bool zbReadNonMessageJsonResponse(
     long statusCode,
     const std::string& body,
     json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * Whether an API key can be sent: true unless it has surrounding whitespace or
+ * control characters. Such a key would be quoted, unredacted, in the HTTP
+ * library's own error.
+ */
+bool zbApiKeyIsClean(const std::string& apiKey);
+
+/** The error every call reports for a key zbApiKeyIsClean rejects. */
+extern const char* const kZbDirtyApiKeyMessage;
+
+/**
+ * Strips trailing slashes from a base URL, so a path appended to it never
+ * becomes `//validate`.
+ */
+std::string zbNormalizeBaseUrl(std::string url);
+
+/**
+ * HTTPS only: reports "url must be an https:// URL" and returns false for any
+ * other URL, before anything is sent. Every request path calls this.
+ */
+bool zbCheckRequestUrl(
+    const std::string& url,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * For the file downloads: reports a response that is not a 2xx -- no response
+ * at all (a transport failure has status 0), a redirect or an HTTP error -- and
+ * returns true. The transport error text has the API key masked out.
+ */
+bool zbReportFailedDownload(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * Writes a downloaded file, creating its parent directories. Reports a path
+ * that is a directory, or a file that cannot be created or written, and
+ * returns false.
+ */
+bool zbSaveDownload(
+    const std::string& localPath,
+    const std::string& body,
     const std::function<void(ZBErrorResponse)>& errorCallback
 );
 

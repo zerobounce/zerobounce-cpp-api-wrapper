@@ -35,6 +35,9 @@ ZeroBounce* ZeroBounce::getInstance() {
 }
 
 void ZeroBounce::initialize(std::string apiKey) {
+    // A key with surrounding whitespace or control characters is kept, not
+    // dropped in favour of an earlier one, and every call then reports it
+    // without sending anything.
     this->apiKey = apiKey;
 }
 
@@ -138,6 +141,14 @@ bool ZeroBounce::invalidApiKey(OnErrorCallback errorCallback) {
             "ZeroBounce is not initialized. Please call ZeroBounce::getInstance()->initialize(apiKey) first"
         );
         errorCallback(errorResponse);
+        return true;
+    }
+    // initialize() keeps a rejected key rather than an earlier one, so every
+    // call reports the rejection and none sends either key.
+    if (!zbApiKeyIsClean(apiKey)) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(kZbDirtyApiKeyMessage));
+        }
         return true;
     }
     return false;
@@ -271,6 +282,7 @@ void ZeroBounce::validate(
         if (options.callbackUrl.has_value()) {
             body += "&callback_url=" + urlEncode(options.callbackUrl.value());
         }
+        if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
         ZBOutcome<ZBValidateResponse> outcome;
         try {
             cpr::Response reqResponse = requestHandler->Post(
@@ -333,6 +345,7 @@ void ZeroBounce::validateBatch(
 ) {
     if (invalidApiKey(errorCallback)) return;
     if (!checkValidateBatchTimeout(options.timeout, errorCallback)) return;
+    if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
 
     ZBOutcome<ZBValidateBatchResponse> outcome;
     try {
@@ -521,6 +534,8 @@ void ZeroBounce::scoreEmailPost(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
+
     ZBOutcome<ZBScoreEmailResponse> outcome;
     try {
         std::string body =
@@ -553,6 +568,7 @@ void ZeroBounce::sendRequest(
     bool messageOnlyIsFailure
 ) {
     if (invalidApiKey(errorCallback)) return;
+    if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
 
     ZBOutcome<T> outcome;
     try {
@@ -584,9 +600,11 @@ void ZeroBounce::sendFileInternal(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    std::string urlPath = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/sendfile";
+    if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
+
     ZBOutcome<ZBSendFileResponse> outcome;
     try {
-        std::string urlPath = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/sendfile";
 
         cpr::Multipart multipart{
             {"api_key", apiKey},
@@ -665,9 +683,11 @@ void ZeroBounce::getFileInternal(
     GetFileOptions emptyOptions;
     const GetFileOptions& options = getFileOptionsPtr ? *getFileOptionsPtr : emptyOptions;
 
+    const std::string base = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/getfile";
+    if (!zbCheckRequestUrl(base, errorCallback)) return;
+
     ZBOutcome<ZBGetFileResponse> outcome;
     try {
-        const std::string base = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/getfile";
         cpr::Parameters params;
         params.Add({{"api_key", apiKey}, {"file_id", fileId}});
         if (!options.downloadType.empty()) {
@@ -683,30 +703,19 @@ void ZeroBounce::getFileInternal(
 
         std::string rsp = reqResponse.text;
 
-        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
+        if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
+            // No file is written for a transport failure, a redirect or an HTTP error.
+        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (shouldTreatGetFileBodyAsError(rsp, contentType)) {
             outcome.fail(ZBErrorResponse::parseError(
                 formatGetFileErrorMessage(rsp), reqResponse.status_code));
-        } else {
+        } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             // The file is saved whether or not a success callback was passed.
-            fs::path filePath(localDownloadPath);
-
-            if (fs::is_directory(filePath)) {
-                outcome.fail(ZBErrorResponse::parseError("Invalid file path"));
-            } else {
-                fs::create_directories(filePath.parent_path());
-
-                std::ofstream fileStream(filePath, std::ofstream::out | std::ofstream::binary);
-
-                fileStream.write(rsp.c_str(), static_cast<std::streamsize>(rsp.size()));
-                fileStream.close();
-
-                ZBGetFileResponse response;
-                response.success = true;
-                response.localFilePath = localDownloadPath;
-                outcome.succeed(response);
-            }
+            ZBGetFileResponse response;
+            response.success = true;
+            response.localFilePath = localDownloadPath;
+            outcome.succeed(response);
         }
     } catch (const std::exception& e) {
         outcome.fail(ZBErrorResponse::parseError(e.what()));

@@ -21,15 +21,21 @@ std::string p3UrlEncode(const std::string& value) {
 }
 
 bool requireApiKey(ZeroBounce* zb, OnErrorCallback errorCallback) {
-    if (!zb->getApiKey().empty()) {
-        return true;
+    if (zb->getApiKey().empty()) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(
+                "ZeroBounce is not initialized. Please call ZeroBounce::getInstance()->initialize(apiKey) first"
+            ));
+        }
+        return false;
     }
-    if (errorCallback) {
-        errorCallback(ZBErrorResponse::parseError(
-            "ZeroBounce is not initialized. Please call ZeroBounce::getInstance()->initialize(apiKey) first"
-        ));
+    if (!zbApiKeyIsClean(zb->getApiKey())) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(kZbDirtyApiKeyMessage));
+        }
+        return false;
     }
-    return false;
+    return true;
 }
 
 void postSendFileForm(
@@ -39,7 +45,7 @@ void postSendFileForm(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (!requireApiKey(zb, errorCallback)) {
+    if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
     ZBOutcome<ZBSendFileResponse> outcome;
@@ -75,7 +81,7 @@ void sendRawJsonGet(
     OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (!requireApiKey(zb, errorCallback)) {
+    if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
     ZBOutcome<std::string> outcome;
@@ -101,7 +107,7 @@ void sendRawJsonFormPost(
     OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (!requireApiKey(zb, errorCallback)) {
+    if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
     ZBOutcome<std::string> outcome;
@@ -139,7 +145,7 @@ void bulkRootMultipart(
     OnSuccessCallback<ZBSendFileResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (!requireApiKey(zb, errorCallback)) {
+    if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
     ZBOutcome<ZBSendFileResponse> outcome;
@@ -244,19 +250,21 @@ void ZeroBounce::emailFinderGetFile(
     if (invalidApiKey(errorCallback)) {
         return;
     }
+    const std::string url = bulkApiRootUrl + "/email-finder/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId);
+    if (!zbCheckRequestUrl(url, errorCallback)) {
+        return;
+    }
     ZBOutcome<ZBGetFileResponse> outcome;
     try {
-        cpr::Response reqResponse = requestHandler->Get(
-            cpr::Url{bulkApiRootUrl + "/email-finder/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId)}
-        );
+        cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
         std::string contentType = reqResponse.header["Content-Type"];
-        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
+        if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
+            // Nothing is written for a transport failure, a redirect or an HTTP error.
+        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
                 || ZeroBounce::getFileJsonIndicatesError(rsp)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
-        } else {
-            std::ofstream out(localDownloadPath, std::ios::binary);
-            out.write(rsp.data(), static_cast<std::streamsize>(rsp.size()));
+        } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
             response.localFilePath = localDownloadPath;
             outcome.succeed(response);
@@ -325,19 +333,21 @@ void ZeroBounce::domainSearchGetFile(
     if (invalidApiKey(errorCallback)) {
         return;
     }
+    const std::string url = bulkApiRootUrl + "/domain-search/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId);
+    if (!zbCheckRequestUrl(url, errorCallback)) {
+        return;
+    }
     ZBOutcome<ZBGetFileResponse> outcome;
     try {
-        cpr::Response reqResponse = requestHandler->Get(
-            cpr::Url{bulkApiRootUrl + "/domain-search/getfile?api_key=" + p3UrlEncode(apiKey) + "&file_id=" + p3UrlEncode(fileId)}
-        );
+        cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
         std::string contentType = reqResponse.header["Content-Type"];
-        if (reqResponse.status_code > 299 || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
+        if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
+            // Nothing is written for a transport failure, a redirect or an HTTP error.
+        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
                 || ZeroBounce::getFileJsonIndicatesError(rsp)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
-        } else {
-            std::ofstream out(localDownloadPath, std::ios::binary);
-            out.write(rsp.data(), static_cast<std::streamsize>(rsp.size()));
+        } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
             response.localFilePath = localDownloadPath;
             outcome.succeed(response);
@@ -572,6 +582,9 @@ void ZeroBounce::listS3files(
     if (search.has_value() && !search->empty()) {
         url += "&search=" + p3UrlEncode(*search);
     }
+    if (!zbCheckRequestUrl(url, errorCallback)) {
+        return;
+    }
     ZBOutcome<std::vector<ZBS3ListFileEntry>> outcome;
     try {
         cpr::Response reqResponse = getRequestHandler()->Get(
@@ -745,7 +758,7 @@ void iptRequest(
     OnRawJsonSuccessCallback successCallback,
     OnErrorCallback errorCallback
 ) {
-    if (!requireApiKey(zb, errorCallback)) {
+    if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
     // LIVE: the Inbox Placement Tester authenticates with a Bearer header.
@@ -798,23 +811,23 @@ void iptRequest(
 }  // namespace
 
 void ZeroBounce::setListEvaluatorBaseUrl(const std::string& url) {
-    listEvaluatorBaseUrl = url;
+    listEvaluatorBaseUrl = zbNormalizeBaseUrl(url);
 }
 
 void ZeroBounce::setInboxPlacementBaseUrl(const std::string& url) {
-    inboxPlacementBaseUrl = url;
+    inboxPlacementBaseUrl = zbNormalizeBaseUrl(url);
 }
 
 void ZeroBounce::setBulkApiRootUrl(const std::string& url) {
-    bulkApiRootUrl = url;
+    bulkApiRootUrl = zbNormalizeBaseUrl(url);
 }
 
 void ZeroBounce::setBulkApiBaseUrl(const std::string& url) {
-    bulkApiBaseUrl = url;
+    bulkApiBaseUrl = zbNormalizeBaseUrl(url);
 }
 
 void ZeroBounce::setBulkApiScoringBaseUrl(const std::string& url) {
-    bulkApiScoringBaseUrl = url;
+    bulkApiScoringBaseUrl = zbNormalizeBaseUrl(url);
 }
 
 void ZeroBounce::getInboxPlacementProviders(

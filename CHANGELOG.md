@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- Every request is HTTPS only. A base URL set to anything but `https://` with `setBulkApiRootUrl`, `setBulkApiBaseUrl`, `setBulkApiScoringBaseUrl`, `setListEvaluatorBaseUrl` or `setInboxPlacementBaseUrl` makes each call that uses it report `url must be an https:// URL` to its error callback and send nothing. 2.2.0 sent those requests, API key included, over plain `http://`. The `ZBApiURL` hosts are all `https://` and are not affected.
+- `initialize` rejects an API key with surrounding whitespace or control characters, as `ZeroBounceWarmup::initialize` already did: every call then reports `api_key has surrounding whitespace or control characters` to its error callback and sends nothing. 2.2.0 sent such a key. Re-initializing with a rejected key does not fall back to the key set before it.
+- `RequestHandler` gained two data members (its timeouts) and overrides `doPut` and `doDelete`, so code built against 2.2.0 that subclasses or embeds it must be rebuilt.
+
+### Added
+
+- `RequestHandler(timeoutMs, connectTimeoutMs)` builds a handler with other timeouts, and `BaseRequestHandler::DefaultTimeoutMs` (120000) and `DefaultConnectTimeoutMs` (30000) name the defaults.
+
+### Changed
+
+- Every request has a 30-second connect timeout, the TLS handshake included, next to the 120-second total timeout it already had.
+- The five base URL setters strip trailing slashes, so `setBulkApiBaseUrl("https://host/v2/")` no longer produces `https://host/v2//sendfile`.
+- `emailFinderGetFile` and `domainSearchGetFile` create the download path's missing parent directories, as `getFile` already did.
+
+### Fixed
+
+- `getFile`, `getFileWithOptions`, `scoringGetFile`, `scoringGetFileWithOptions`, `emailFinderGetFile` and `domainSearchGetFile` reported success and wrote an empty file when no response arrived at all (connection refused, timed out, failed TLS handshake: HTTP status 0). They now call the error callback with `Could not reach ZeroBounce: <transport error>` and `statusCode` 0, and write nothing. A redirect is reported as `ZeroBounce returned a redirect, which this client does not follow.` with its status.
+- `emailFinderGetFile` and `domainSearchGetFile` reported success when the downloaded file could not be written (for example a path under a regular file), and `getFile` and its siblings did so when the file could not be opened (for example a file name longer than the file system allows). Each now reports the failure to the error callback.
+- `getFile("fid", "results.csv")`, a bare file name, failed with `filesystem error: in create_directories: No such file or directory [""]`. The file is now saved in the current directory.
+
 ## [2.2.0] - 2026-11-11
+
+### Breaking
+
+- Several public classes changed layout, so code built against 2.1.4 must be rebuilt against 2.2.0; mixing them is undefined behaviour. `ZBValidateResponse` has new members in the middle (`activeInDays` and `activeFirstSeen` after `domainAgeDays`; `domainWebsiteExists`, `domainRegistrantCompanyName` and `message` before `error`). `ZBGetApiUsageResponse` has `subStatusLeadingPeriodRemoved` and `subStatusAliasAddress` before `startDate`. `ZBErrorResponse` gained `statusCode`. `ZeroBounce` gained private members (the bulk, list evaluator and Inbox Placement Tester base URLs). `BaseRequestHandler` gained three virtual functions (`doPut` and two `doDelete`), which changes its vtable.
+
+#### Upgrading from 2.1.4
+
+- Rebuild everything that includes the headers, including your own `BaseRequestHandler` subclasses.
+- Behaviour changes to check: an invalid or drained key, `{"success": false}` on an HTTP 200, and an account-level `validateBatch` error now reach the error callback (see Fixed); an exception thrown by your own callback now propagates (see Changed); `ZBErrorResponse::toString()` ends with `, statusCode=N`.
+- macOS builds of the bundled libcurl need OpenSSL (see Changed).
 
 ### Added
 
