@@ -29,3 +29,39 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
+
+  test-min-cmake:
+    # Builds and tests with the oldest CMake the project supports, matching
+    # cmake_minimum_required(VERSION 3.20) in CMakeLists.txt (ctest --test-dir
+    # is also new in 3.20). 3.20.2 is the oldest 3.20 release on PyPI.
+    name: Test (minimum CMake 3.20.2)
+    runs-on: ubuntu-latest
+    env:
+      MIN_CMAKE: "3.20.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev python3-venv
+
+      - name: Install CMake ${{ env.MIN_CMAKE }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install --disable-pip-version-check "cmake==$MIN_CMAKE"
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check CMake version
+        run: |
+          cmake --version
+          test "$(cmake --version | head -n 1)" = "cmake version $MIN_CMAKE"
+          test "$(ctest --version | head -n 1)" = "ctest version $MIN_CMAKE"
+
+      - name: Configure and build
+        run: cmake -S . -B build -G "Unix Makefiles" && cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
