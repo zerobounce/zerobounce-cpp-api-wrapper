@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 #include <curl/curl.h>
@@ -216,6 +218,206 @@ static std::string zbResponseContentType(const cpr::Response& response) {
     return it == response.header.end() ? std::string() : it->second;
 }
 
+namespace {
+
+// A strict RFC 8259 check over the whole body. nlohmann's parser is strict
+// about the value itself, but it skips a leading UTF-8 byte order mark and
+// stops at a NUL byte, so "\xEF\xBB\xBF{...}" and "{...}\0junk" passed as
+// JSON. Only space, tab, CR and LF may surround the value.
+class ZbStrictJsonScan {
+public:
+    explicit ZbStrictJsonScan(const std::string& text) : text_(text) {}
+
+    bool whole() {
+        ws();
+        if (!value(0)) {
+            return false;
+        }
+        ws();
+        return at_ == text_.size();
+    }
+
+private:
+    static constexpr int kMaxDepth = 512;
+
+    bool more() const { return at_ < text_.size(); }
+    char peek() const { return more() ? text_[at_] : '\0'; }
+
+    void ws() {
+        while (more() && (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r')) {
+            ++at_;
+        }
+    }
+
+    bool digits() {
+        if (!more() || !std::isdigit(static_cast<unsigned char>(peek()))) {
+            return false;
+        }
+        while (more() && std::isdigit(static_cast<unsigned char>(peek()))) {
+            ++at_;
+        }
+        return true;
+    }
+
+    bool number() {
+        if (peek() == '-') {
+            ++at_;
+        }
+        if (peek() == '0') {
+            ++at_;
+        } else if (!digits()) {
+            return false;
+        }
+        if (peek() == '.') {
+            ++at_;
+            if (!digits()) {
+                return false;
+            }
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            ++at_;
+            if (peek() == '+' || peek() == '-') {
+                ++at_;
+            }
+            if (!digits()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool string() {
+        if (peek() != '"') {
+            return false;
+        }
+        ++at_;
+        while (more()) {
+            const auto c = static_cast<unsigned char>(text_[at_++]);
+            if (c == '"') {
+                return true;
+            }
+            if (c < 0x20) {
+                return false;
+            }
+            if (c == '\\') {
+                if (!more()) {
+                    return false;
+                }
+                const char escape = text_[at_++];
+                if (escape == 'u') {
+                    for (int i = 0; i < 4; ++i) {
+                        if (!more() || !std::isxdigit(static_cast<unsigned char>(text_[at_]))) {
+                            return false;
+                        }
+                        ++at_;
+                    }
+                } else if (std::string("\"\\/bfnrt").find(escape) == std::string::npos || escape == '\0') {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool literal(const char* word) {
+        const std::string expected(word);
+        if (text_.compare(at_, expected.size(), expected) != 0) {
+            return false;
+        }
+        at_ += expected.size();
+        return true;
+    }
+
+    bool value(int depth) {
+        if (!more() || depth > kMaxDepth) {
+            return false;
+        }
+        switch (peek()) {
+        case '{':
+            ++at_;
+            ws();
+            if (peek() == '}') {
+                ++at_;
+                return true;
+            }
+            for (;;) {
+                if (!string()) {
+                    return false;
+                }
+                ws();
+                if (peek() != ':') {
+                    return false;
+                }
+                ++at_;
+                ws();
+                if (!value(depth + 1)) {
+                    return false;
+                }
+                ws();
+                if (more() && peek() == ',') {
+                    ++at_;
+                    ws();
+                    continue;
+                }
+                if (more() && peek() == '}') {
+                    ++at_;
+                    return true;
+                }
+                return false;
+            }
+        case '[':
+            ++at_;
+            ws();
+            if (peek() == ']') {
+                ++at_;
+                return true;
+            }
+            for (;;) {
+                ws();
+                if (!value(depth + 1)) {
+                    return false;
+                }
+                ws();
+                if (more() && peek() == ',') {
+                    ++at_;
+                    continue;
+                }
+                if (more() && peek() == ']') {
+                    ++at_;
+                    return true;
+                }
+                return false;
+            }
+        case '"':
+            return string();
+        case 't':
+            return literal("true");
+        case 'f':
+            return literal("false");
+        case 'n':
+            return literal("null");
+        default:
+            return number();
+        }
+    }
+
+    const std::string& text_;
+    size_t at_ = 0;
+};
+
+}  // namespace
+
+bool zbJsonIsStrict(const std::string& text) {
+    return ZbStrictJsonScan(text).whole();
+}
+
+json zbParseStrictJson(const std::string& body) {
+    if (!zbJsonIsStrict(body)) {
+        throw std::invalid_argument("not strict JSON");
+    }
+    return json::parse(body);
+}
+
 // The body checks of zbReadJsonResponse, once the transport check has passed.
 // File-local, so that no call can read a body without that check.
 static bool zbReadJsonBody(
@@ -233,7 +435,7 @@ static bool zbReadJsonBody(
         return false;
     }
     try {
-        out = json::parse(body);
+        out = zbParseStrictJson(body);
     } catch (const std::exception&) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
@@ -343,11 +545,144 @@ std::vector<std::string> zbSecretForms(const std::string& secret) {
     return forms;
 }
 
+const char* const kZbSecretOmittedMessage =
+    "The response body was omitted because it contained a credential.";
+
+namespace {
+
+int zbHexValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// text URL-decoded: each %XX as its byte, and '+' as a space when plusAsSpace
+// is set (a form body).
+std::string zbUrlDecodeView(const std::string& text, bool plusAsSpace) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        int hi = -1;
+        int lo = -1;
+        if (text[i] == '%' && i + 2 < text.size() && (hi = zbHexValue(text[i + 1])) >= 0 &&
+            (lo = zbHexValue(text[i + 2])) >= 0) {
+            out += static_cast<char>(hi * 16 + lo);
+            i += 2;
+        } else if (plusAsSpace && text[i] == '+') {
+            out += ' ';
+        } else {
+            out += text[i];
+        }
+    }
+    return out;
+}
+
+long zbHex4(const std::string& text, size_t at) {
+    if (at + 4 > text.size()) {
+        return -1;
+    }
+    long value = 0;
+    for (size_t i = at; i < at + 4; ++i) {
+        int digit = zbHexValue(text[i]);
+        if (digit < 0) {
+            return -1;
+        }
+        value = value * 16 + digit;
+    }
+    return value;
+}
+
+void zbAppendUtf8(std::string& out, unsigned long cp) {
+    if (cp < 0x80) {
+        out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
+// text with JSON string escapes undone (\" \\ \/ \b \f \n \r \t \uXXXX,
+// surrogate pairs included); anything else is kept.
+std::string zbJsonUnescapeView(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] != '\\' || i + 1 >= text.size()) {
+            out += text[i];
+            continue;
+        }
+        static const char escapes[] = "\"\\/bfnrt";
+        static const char decoded[] = "\"\\/\b\f\n\r\t";
+        const char next = text[i + 1];
+        const char* simple = next != '\0' ? std::strchr(escapes, next) : nullptr;
+        if (simple) {
+            out += decoded[simple - escapes];
+            ++i;
+            continue;
+        }
+        long cp = next == 'u' ? zbHex4(text, i + 2) : -1;
+        if (cp < 0) {
+            out += text[i];
+            continue;
+        }
+        i += 5;
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 2 < text.size() && text[i + 1] == '\\' && text[i + 2] == 'u') {
+            long low = zbHex4(text, i + 3);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                i += 6;
+            }
+        }
+        zbAppendUtf8(out, static_cast<unsigned long>(cp));
+    }
+    return out;
+}
+
+// Whether secret can be read in text or in any view of it decoded up to
+// layers more times: URL-decoded, form-decoded ('+' as a space too) and
+// JSON-unescaped, in any order.
+bool zbSecretInDecodedViews(const std::string& text, const std::string& secret, int layers) {
+    if (text.find(secret) != std::string::npos) {
+        return true;
+    }
+    if (layers == 0) {
+        return false;
+    }
+    for (const std::string& view :
+         {zbUrlDecodeView(text, false), zbUrlDecodeView(text, true), zbJsonUnescapeView(text)}) {
+        if (view != text && zbSecretInDecodedViews(view, secret, layers - 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 std::string zbMaskSecret(std::string text, const std::string& secret) {
+    if (secret.empty()) {
+        return text;
+    }
     for (const auto& form : zbSecretForms(secret)) {
         for (size_t at = 0; (at = text.find(form, at)) != std::string::npos; at += 3) {
             text.replace(at, form.size(), "***");
         }
+    }
+    // Redaction is closed under encoding: a spelling the forms above miss
+    // (three URL layers, URL of double JSON, ...) still decodes to the
+    // secret, and then none of the text is kept.
+    if (zbSecretInDecodedViews(text, secret, 3)) {
+        return kZbSecretOmittedMessage;
     }
     return text;
 }

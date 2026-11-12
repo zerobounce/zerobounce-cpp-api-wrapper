@@ -550,7 +550,6 @@ TEST(OfflineApi, SendFileEncodesBooleansAndKeepsZeroColumn) {
     options.allowPhase2IsSet = true;
     options.allowPhase2 = false;
     options.removeDuplicate = false;
-    options.removeDuplicateSet = true;
     options.hasHeaderRow = true;
     client.sendFile(
         kCsv,
@@ -2081,9 +2080,10 @@ TEST(OfflineApi, AnEmptyBodyInPlaceOfAFileIsAnError) {
     std::filesystem::remove_all(dir);
 }
 
-TEST(OfflineApi, SendFileSendsRemoveDuplicateOnlyWhenSet) {
-    // The API defaults remove_duplicate to true; the SDK sends it only when
-    // the caller chose a value.
+TEST(OfflineApi, SendFileAlwaysSendsRemoveDuplicate) {
+    // remove_duplicate goes out with the caller's value, true by default, as
+    // in 3.0.x: an explicit false is never dropped, whether or not the
+    // removeDuplicateSet field (no longer needed) is set.
     for (bool scoring : {false, true}) {
         FakeApi api;
         OfflineClient client(api, "file-key");
@@ -2101,21 +2101,16 @@ TEST(OfflineApi, SendFileSendsRemoveDuplicateOnlyWhenSet) {
         };
         SendFileOptions options;
         auto request = send(options);
-        EXPECT_EQ(request.fields.count("remove_duplicate"), 0u) << scoring;
+        EXPECT_EQ(request.fields["remove_duplicate"], "true") << scoring;
         EXPECT_EQ(request.fields["has_header_row"], "true") << scoring;
-        // A value without removeDuplicateSet is not sent either, so code
-        // written for 3.0.1 that assigns it keeps compiling.
-        for (bool value : {false, true}) {
-            options.removeDuplicate = value;
-            options.removeDuplicateSet = false;
-            request = send(options);
-            EXPECT_EQ(request.fields.count("remove_duplicate"), 0u) << scoring;
-        }
-        for (bool value : {false, true}) {
-            options.removeDuplicate = value;
-            options.removeDuplicateSet = true;
-            request = send(options);
-            EXPECT_EQ(request.fields["remove_duplicate"], value ? "true" : "false") << scoring;
+        for (bool set : {false, true}) {
+            for (bool value : {false, true}) {
+                options.removeDuplicate = value;
+                options.removeDuplicateSet = set;
+                request = send(options);
+                EXPECT_EQ(request.fields["remove_duplicate"], value ? "true" : "false")
+                    << scoring << " set " << set;
+            }
         }
     }
 }
@@ -2123,7 +2118,7 @@ TEST(OfflineApi, SendFileSendsRemoveDuplicateOnlyWhenSet) {
 // SendFileOptions keeps the 3.0.1 shape: removeDuplicate is a plain bool
 // (reading it into a bool and taking a bool pointer compile), and
 // removeDuplicateSet comes last, so an aggregate initialiser written for
-// 3.0.1 compiles and leaves it unset.
+// 3.0.1 compiles and sends the removeDuplicate it holds, as 3.0.1 did.
 static_assert(std::is_same_v<decltype(SendFileOptions::removeDuplicate), bool>,
               "removeDuplicate must stay a bool");
 
@@ -2143,7 +2138,7 @@ TEST(OfflineApi, SendFileOptionsStaySourceCompatible) {
     client.sendFile(
         kCsv, 1, positional, [](ZBSendFileResponse) {},
         [](ZBErrorResponse error) { FAIL() << error.toString(); });
-    EXPECT_EQ(onlyRequest(api).fields.count("remove_duplicate"), 0u);
+    EXPECT_EQ(onlyRequest(api).fields["remove_duplicate"], "false");
 }
 
 #ifndef _WIN32
@@ -2790,5 +2785,225 @@ TEST(OfflineApi, AnEmptyBodyIsASuccessOnlyForAnInboxPlacementDelete) {
     client.deleteInboxPlacementTest("t1", [&](std::string json) { result = json; },
         [&](ZBErrorResponse error) { ADD_FAILURE() << error.toString(); });
     EXPECT_EQ(result, "{}");
+    std::filesystem::remove_all(dir);
+}
+
+/// One line of the strict-JSON corpus (also defined, identically, in
+/// OfflineWarmupTest.cpp).
+struct StrictJsonCorpusEntry {
+    bool accept;
+    std::string body;
+    std::string line;
+};
+
+/**
+ * test/fixtures/strict-json-corpus.tsv is a byte-identical copy of
+ * sdk-docs/skills/zerobounce-sdk/references/strict-json-corpus.tsv in
+ * zerobounce/sdk-docs (standard section 3, check E7); update it from there.
+ * Each line is REJECT or ACCEPT, a tab, and the body as a JSON-encoded string.
+ */
+std::vector<StrictJsonCorpusEntry> strictJsonCorpus() {
+    std::ifstream in(ZB_STRICT_JSON_CORPUS, std::ios::binary);
+    EXPECT_TRUE(in.good()) << ZB_STRICT_JSON_CORPUS;
+    std::vector<StrictJsonCorpusEntry> entries;
+    for (std::string line; std::getline(in, line);) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        const auto tab = line.find('\t');
+        EXPECT_NE(tab, std::string::npos) << line;
+        const std::string kind = line.substr(0, tab);
+        EXPECT_TRUE(kind == "ACCEPT" || kind == "REJECT") << line;
+        entries.push_back({kind == "ACCEPT", json::parse(line.substr(tab + 1)).get<std::string>(), line});
+    }
+    // 42 REJECT and 9 ACCEPT lines when this was written.
+    EXPECT_GE(entries.size(), 51u);
+    return entries;
+}
+
+TEST(OfflineApi, EveryJsonCallTakesOnlyStrictJson) {
+    // Every call, against every corpus body on an HTTP 200 application/json:
+    // a REJECT body is an error with status 200, an ACCEPT body is read as
+    // JSON. The downloads take any application/json answer as the API's
+    // error, and deleteInboxPlacementTest's empty (or blank) 2xx is its
+    // documented empty success. A typed call whose result needs fields an
+    // ACCEPT body lacks (the batch's lists, a bulk submission's message)
+    // reports that, not a JSON error.
+    EchoingApi api;
+    EchoingClient client(api, "corpus-key");
+    const auto dir = freshTempDir("strict-json");
+    const std::string path = (dir / "out.csv").string();
+    api.status = 200;
+    api.contentType = "application/json";
+    for (const auto& entry : strictJsonCorpus()) {
+        api.body = entry.body;
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + " with " + entry.line;
+            const bool blank = entry.body.find_first_not_of(" \t\r\n") == std::string::npos;
+            const bool emptyDelete = blank && call.name == "deleteInboxPlacementTest";
+            const bool success = !call.download && (entry.accept || emptyDelete);
+            api.requests = 0;
+            int successes = 0;
+            int errors = 0;
+            int schemaErrors = 0;
+            call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+                if (success && error.errors.size() == 1 &&
+                    error.errors.front() == "ZeroBounce returned an unexpected JSON response.") {
+                    ++schemaErrors;
+                    return;
+                }
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << label << ": " << error.toString();
+            });
+            EXPECT_EQ(api.requests, 1) << label;
+            EXPECT_EQ(successes + schemaErrors, success ? 1 : 0) << label;
+            EXPECT_EQ(errors, success ? 0 : 1) << label;
+            EXPECT_FALSE(std::filesystem::exists(path)) << label << " saved a file";
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+/// One encoding a server or proxy may apply: URL-encoding with a space as %20
+/// (0) or '+' (1), JSON escaping (2), JSON escaping with '/' as '\/' (3).
+std::string fuzzEncode(const std::string& in, int how) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : in) {
+        if (how >= 2) {
+            if (c == '"' || c == '\\' || (how == 3 && c == '/')) {
+                out += '\\';
+            }
+            out += static_cast<char>(c);
+        } else if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += static_cast<char>(c);
+        } else if (c == ' ' && how == 1) {
+            out += '+';
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+int fuzzHex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/// One decoding: %XX (0), %XX and '+' (1), JSON unescaping (2).
+std::string fuzzDecode(const std::string& in, int how) {
+    std::string out;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (how < 2 && in[i] == '%' && i + 2 < in.size() && fuzzHex(in[i + 1]) >= 0 && fuzzHex(in[i + 2]) >= 0) {
+            out += static_cast<char>(fuzzHex(in[i + 1]) * 16 + fuzzHex(in[i + 2]));
+            i += 2;
+        } else if (how == 1 && in[i] == '+') {
+            out += ' ';
+        } else if (how == 2 && in[i] == '\\' && i + 1 < in.size()) {
+            const std::string from = "\"\\/bfnrt";
+            const std::string to = "\"\\/\b\f\n\r\t";
+            const auto at = from.find(in[i + 1]);
+            if (at != std::string::npos) {
+                out += to[at];
+                ++i;
+            } else if (in[i + 1] == 'u' && i + 5 < in.size() && fuzzHex(in[i + 2]) >= 0 &&
+                       fuzzHex(in[i + 3]) >= 0 && fuzzHex(in[i + 4]) >= 0 && fuzzHex(in[i + 5]) >= 0) {
+                const unsigned cp = static_cast<unsigned>((fuzzHex(in[i + 2]) << 12) | (fuzzHex(in[i + 3]) << 8) |
+                                                          (fuzzHex(in[i + 4]) << 4) | fuzzHex(in[i + 5]));
+                if (cp < 0x80) {
+                    out += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+                i += 5;
+            } else {
+                out += in[i];
+            }
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+/// Whether secret is in text or in any view of it decoded up to layers times,
+/// in any order. Written apart from the SDK's own check.
+bool fuzzSecretReadable(const std::string& text, const std::string& secret, int layers) {
+    if (text.find(secret) != std::string::npos) {
+        return true;
+    }
+    for (int how = 0; how < 3 && layers > 0; ++how) {
+        if (fuzzSecretReadable(fuzzDecode(text, how), secret, layers - 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A random composition of up to three encodings of secret; desc gets the
+/// sequence, e.g. "2,0".
+std::string fuzzSpelling(const std::string& secret, std::mt19937& random, std::string& desc) {
+    std::string text = secret;
+    desc.clear();
+    const int layers = static_cast<int>(random() % 4);
+    for (int i = 0; i < layers; ++i) {
+        const int how = static_cast<int>(random() % 4);
+        text = fuzzEncode(text, how);
+        desc += (i ? "," : "") + std::to_string(how);
+    }
+    return text;
+}
+
+/// A body quoting a spelling: a JSON error (one more JSON escape, which the
+/// SDK's parser undoes) or a text one.
+std::string fuzzBody(const std::string& spelling, int round) {
+    return round % 2 ? R"({"error":"Invalid API key )" + fuzzEncode(spelling, 2) + R"("})"
+                     : "Bad Request: [" + spelling + "] end";
+}
+
+TEST(OfflineApi, RedactionIsClosedUnderEncoding) {
+    // Standard section 3: whatever composition of up to three URL and JSON
+    // encodings a body uses to quote the key, no decoded view of any error a
+    // call gets holds it. Seeded, so a failure repeats.
+    const std::string key = "fz a\"b/c\\d+e%f&g=h<i>j'k";
+    EchoingApi api;
+    EchoingClient client(api, key);
+    const auto dir = freshTempDir("redaction-fuzz");
+    const std::string path = (dir / "out.csv").string();
+    std::mt19937 random(20261112u);
+    for (int round = 0; round < 60; ++round) {
+        std::string desc;
+        const std::string spelling = fuzzSpelling(key, random, desc);
+        api.body = fuzzBody(spelling, round);
+        api.status = round % 2 ? 200 : 400;
+        api.contentType = round % 2 ? "application/json" : "text/plain";
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + ", encodings [" + desc + "], status " + std::to_string(api.status);
+            int errors = 0;
+            call.run(path, [&] { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                const std::string text = error.toString();
+                EXPECT_FALSE(fuzzSecretReadable(text, key, 3)) << label << ": " << text;
+            });
+            EXPECT_EQ(errors, 1) << label;
+        }
+    }
     std::filesystem::remove_all(dir);
 }

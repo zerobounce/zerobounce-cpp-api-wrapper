@@ -276,7 +276,7 @@ bool warmupJson(
     // reaches the caller instead of being reported as an API error.
     std::string payload;
     try {
-        payload = json::parse(result.body).dump();
+        payload = zbParseStrictJson(result.body).dump();
     } catch (const std::exception&) {
         // The key too: a 200 that is not JSON may quote it.
         reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), secrets,

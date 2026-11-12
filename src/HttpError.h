@@ -134,7 +134,24 @@ bool zbSaveDownload(
  */
 std::vector<std::string> zbSecretForms(const std::string& secret);
 
-/** A copy of text with every form of secret (zbSecretForms) replaced by ***. */
+/**
+ * Whether text is exactly one strict RFC 8259 JSON value, with only space,
+ * tab, CR and LF around it (no byte order mark, no NUL byte).
+ */
+bool zbJsonIsStrict(const std::string& text);
+
+/** json::parse(body) after zbJsonIsStrict; throws for anything else. */
+json zbParseStrictJson(const std::string& body);
+
+/** What an error says in place of a body that still held a secret. */
+extern const char* const kZbSecretOmittedMessage;
+
+/**
+ * A copy of text with every form of secret (zbSecretForms) replaced by ***.
+ * When a view of the result decoded up to three times (URL-decoding, '+' as a
+ * space, JSON-unescaping, in any order) still holds the secret, the whole
+ * text is replaced by kZbSecretOmittedMessage.
+ */
 std::string zbMaskSecret(std::string text, const std::string& secret);
 
 /**

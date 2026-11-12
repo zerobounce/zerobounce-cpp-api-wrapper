@@ -616,10 +616,8 @@ void ZeroBounce::sendFileInternal(
         }
 
         multipart.parts.emplace_back(cpr::Part{"has_header_row", std::string(options.hasHeaderRow ? "true" : "false")});
-        // Only when the caller set it: the API defaults it to true.
-        if (options.removeDuplicateSet) {
-            multipart.parts.emplace_back(cpr::Part{"remove_duplicate", std::string(options.removeDuplicate ? "true" : "false")});
-        }
+        // Always sent, with the caller's value (true by default), as in 3.0.x.
+        multipart.parts.emplace_back(cpr::Part{"remove_duplicate", std::string(options.removeDuplicate ? "true" : "false")});
 
         if (!scoring && options.allowPhase2IsSet) {
             multipart.parts.emplace_back(cpr::Part{"allow_phase_2", std::string(options.allowPhase2 ? "true" : "false")});

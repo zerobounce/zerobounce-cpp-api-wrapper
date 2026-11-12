@@ -624,7 +624,6 @@ TEST_F(Tests, testSendFileValidWithOptions) {
     options.ipAddressColumn = 5;
     options.hasHeaderRow = true;
     options.removeDuplicate = false;
-    options.removeDuplicateSet = true;
 
     ZeroBounceTest::getInstance()->sendFile(
         "../email_file.csv",

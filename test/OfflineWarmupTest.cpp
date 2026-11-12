@@ -12,6 +12,7 @@
 #include <sstream>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -1181,5 +1182,89 @@ TEST(OfflineWarmup, ATextHtml200IsAnErrorOnEveryCall) {
         });
         EXPECT_TRUE(failed) << name;
         EXPECT_EQ(api.take().size(), 1u) << name;
+    }
+}
+
+/// One line of the strict-JSON corpus, as in OfflineApiTest.cpp.
+struct StrictJsonCorpusEntry {
+    bool accept;
+    std::string body;
+    std::string line;
+};
+std::vector<StrictJsonCorpusEntry> strictJsonCorpus();
+bool fuzzSecretReadable(const std::string& text, const std::string& secret, int layers);
+std::string fuzzSpelling(const std::string& secret, std::mt19937& random, std::string& desc);
+std::string fuzzBody(const std::string& spelling, int round);
+
+TEST(OfflineWarmup, EveryJsonCallTakesOnlyStrictJson) {
+    // Every Warmup call against every strict-JSON corpus body on an HTTP 200
+    // application/json (test/fixtures/strict-json-corpus.tsv, see
+    // OfflineApiTest.cpp): a REJECT body is an error with status 200, an
+    // ACCEPT body the result. The CSV downloads take any application/json
+    // answer as an error; an empty or blank 2xx stays a JSON call's
+    // documented empty success.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    for (const auto& [accept, body, line] : strictJsonCorpus()) {
+        for (const auto& [name, call] : everyWarmupCall()) {
+            api.replyWith(200, "application/json", body);
+            const bool csv = name.rfind("download", 0) == 0;
+            const bool blank = body.find_first_not_of(" \t\r\n") == std::string::npos;
+            const bool success = !csv && (accept || blank);
+            const std::string label = name + " with " + line;
+            int successes = 0;
+            int errors = 0;
+            call(client, [&](std::string) { ++successes; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << label << ": " << error.toString();
+            });
+            EXPECT_EQ(successes, success ? 1 : 0) << label;
+            EXPECT_EQ(errors, success ? 0 : 1) << label;
+            EXPECT_EQ(api.take().size(), 1u) << label;
+        }
+    }
+}
+
+TEST(OfflineWarmup, RedactionIsClosedUnderEncoding) {
+    // Whatever composition of up to three URL and JSON encodings an error body
+    // uses to quote the Warmup key or the SMTP username or password, no
+    // decoded view of the error holds it. A Warmup 200 is the result whatever
+    // its body says, so the echoes come with a 4xx. Seeded.
+    const std::string key = "wz a\"b/c\\d+e%f&g=h<i>j'k";
+    const std::string user = "us a\"b/c\\d+e%f&g=h<i>j'k";
+    const std::string password = "pw a\"b/c\\d+e%f&g=h<i>j'k";
+    std::mt19937 random(20261113u);
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api, key);
+    for (int round = 0; round < 40; ++round) {
+        std::string desc;
+        const std::string spelling = fuzzSpelling(key, random, desc);
+        for (const auto& [name, call] : everyWarmupCall()) {
+            api.replyWith(400, round % 2 ? "application/json" : "text/plain", fuzzBody(spelling, round));
+            const std::string label = name + ", encodings [" + desc + "]";
+            int errors = 0;
+            call(client, [&](std::string) { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_FALSE(fuzzSecretReadable(error.toString(), key, 3)) << label << ": " << error.toString();
+            });
+            EXPECT_EQ(errors, 1) << label;
+            api.take();
+        }
+    }
+    OfflineWarmupClient smtp(api);
+    for (int round = 0; round < 200; ++round) {
+        const std::string& secret = round % 3 ? password : user;
+        std::string desc;
+        const std::string spelling = fuzzSpelling(secret, random, desc);
+        api.replyWith(400, round % 2 ? "application/json" : "text/plain", fuzzBody(spelling, round));
+        const std::string label = "testSmtpConfiguration, encodings [" + desc + "]";
+        int errors = 0;
+        smtp.testSmtpConfiguration("a@b.com", user, password, "smtp.example.com", 587,
+            [&](std::string) { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_FALSE(fuzzSecretReadable(error.toString(), secret, 3)) << label << ": " << error.toString();
+            });
+        EXPECT_EQ(errors, 1) << label;
+        api.take();
     }
 }

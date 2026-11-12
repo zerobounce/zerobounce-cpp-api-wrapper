@@ -44,17 +44,16 @@ struct SendFileOptions {
     int ipAddressColumn = 0;
     bool hasHeaderRow = true;
     /**
-     * Sent as remove_duplicate only when removeDuplicateSet is true; otherwise
-     * the field is left out and the API's default (true) applies.
+     * Always sent as remove_duplicate: true (the default, and the API's)
+     * removes duplicate emails, false keeps them.
      */
     bool removeDuplicate = true;
     /** When set, sent as allow_phase_2 on validation sendFile only (not scoringSendFile). */
     bool allowPhase2IsSet = false;
     bool allowPhase2 = false;
     /**
-     * true sends removeDuplicate; false (the default) leaves it out. Kept
-     * last so aggregate initialisers written for earlier versions still
-     * compile and leave it unset.
+     * No longer needed and ignored: removeDuplicate is always sent. Kept,
+     * last, so code that sets it keeps compiling.
      */
     bool removeDuplicateSet = false;
 };
