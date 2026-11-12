@@ -8,11 +8,13 @@
 #include <functional>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <cpr/cpr.h>
@@ -766,7 +768,7 @@ TEST(OfflineWarmup, AddSendingAccountSendsEveryDocumentedField) {
     WarmupManagedSending sending;
     sending.weekdaysOnly = false;
     sending.timezone = "Asia/Kolkata";
-    sending.timezoneOffset = 5.5;
+    sending.timezoneOffsetHours = 5.5;
     sending.warmupStartDate = "2026-11-02";
     options.managedSending = sending;
     client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
@@ -805,27 +807,61 @@ TEST(OfflineWarmup, TheTimezoneOffsetMayBeFractional) {
     FakeWarmupApi api;
     OfflineWarmupClient client(api);
     const std::vector<std::pair<double, std::string>> accepted{
-        {5.5, "5.5"}, {3.0, "3"}, {-11.0, "-11"}, {14.0, "14"}, {-9.5, "-9.5"}, {5.75, "5.75"}};
+        {5.5, "5.5"}, {3.0, "3"}, {-11.0, "-11"}, {14.0, "14"}, {-9.5, "-9.5"}, {5.75, "5.75"}, {0.0, "0"}};
     for (const auto& [offset, sent] : accepted) {
         WarmupAddSendingAccountOptions options;
         WarmupManagedSending sending;
-        sending.timezoneOffset = offset;
+        sending.timezoneOffsetHours = offset;
         options.managedSending = sending;
         client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
         EXPECT_EQ(onlyRequest(api).body,
             R"({"from_address":"sender@example.com","managed_sending":{"timezone_offset":)" + sent +
             R"(},"onboarding_model":"zb_managed"})");
     }
-    for (double offset : {-11.5, 14.5, 15.0, -12.0, std::nan("")}) {
+    for (double offset : {-11.5, 14.5, 15.0, -12.0, std::nan(""), HUGE_VAL, -HUGE_VAL}) {
         WarmupAddSendingAccountOptions options;
         WarmupManagedSending sending;
-        sending.timezoneOffset = offset;
+        sending.timezoneOffsetHours = offset;
         options.managedSending = sending;
         std::string message = captureError([&](auto ok, auto err) {
             client.addSendingAccount("sender@example.com", "zb_managed", options, ok, err);
         });
         EXPECT_NE(message.find("timezone_offset"), std::string::npos) << offset << ": " << message;
     }
+    EXPECT_EQ(api.size(), 0u);
+}
+
+TEST(OfflineWarmup, TheTimezoneOffsetKeepsIts3_0_xType) {
+    // Code written for 3.0.x keeps compiling and sends the same body: the
+    // deprecated timezoneOffset is still std::optional<int> (read into an
+    // int without a conversion, aggregate initialisers). timezoneOffsetHours,
+    // added at the end, wins when both are set.
+    static_assert(std::is_same_v<decltype(WarmupManagedSending::timezoneOffset), std::optional<int>>);
+    static_assert(std::is_same_v<decltype(WarmupManagedSending::timezoneOffsetHours), std::optional<double>>);
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    WarmupManagedSending sending{3, std::string("2026-11-02")};
+    int whole{*sending.timezoneOffset};
+    std::optional<int>* pointer = &sending.timezoneOffset;
+    EXPECT_EQ(whole, 3);
+    EXPECT_EQ(pointer->value_or(0), 3);
+    WarmupAddSendingAccountOptions options;
+    options.managedSending = sending;
+    client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+    EXPECT_EQ(json::parse(onlyRequest(api).body)["managed_sending"],
+        json::parse(R"({"timezone_offset":3,"warmup_start_date":"2026-11-02"})"));
+
+    options.managedSending->timezoneOffsetHours = 5.75;
+    client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+    EXPECT_EQ(json::parse(onlyRequest(api).body)["managed_sending"]["timezone_offset"], 5.75);
+
+    // The deprecated int keeps its range check.
+    options.managedSending->timezoneOffsetHours.reset();
+    options.managedSending->timezoneOffset = -12;
+    std::string message = captureError([&](auto ok, auto err) {
+        client.addSendingAccount("sender@example.com", "zb_managed", options, ok, err);
+    });
+    EXPECT_NE(message.find("timezone_offset"), std::string::npos) << message;
     EXPECT_EQ(api.size(), 0u);
 }
 
@@ -1075,6 +1111,60 @@ TEST(OfflineWarmup, TheSmtpPasswordIsMaskedInEveryEncodedForm) {
             EXPECT_NE(message.find(expected), std::string::npos) << message;
         });
     EXPECT_TRUE(rejected);
+}
+
+namespace {
+
+std::string urlEncoded(const std::string& value, bool plusForSpace) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : value) {
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += static_cast<char>(c);
+        } else if (c == ' ' && plusForSpace) {
+            out += '+';
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(OfflineWarmup, EveryComposedSpellingOfTheSmtpPasswordIsMasked) {
+    // Composed here from the encoders a server or proxy applies, not listed
+    // by hand: {raw, JSON-escaped, JSON-escaped with '\/'} x {as is,
+    // URL-encoded with %20, URL-encoded with '+'}, and JSON-escaped twice
+    // (with and without '\/'). Every form differs, so dropping any one
+    // generator from zbSecretForms leaves its bracket readable.
+    const std::string password = "a b\"c/d+e%f&g=h<i>j'k\\l";
+    std::vector<std::string> forms;
+    for (const std::string& base : {password, jsonEscaped(password, false), jsonEscaped(password, true)}) {
+        forms.push_back(base);
+        forms.push_back(urlEncoded(base, false));
+        forms.push_back(urlEncoded(base, true));
+    }
+    forms.push_back(jsonEscaped(jsonEscaped(password, false), false));
+    forms.push_back(jsonEscaped(jsonEscaped(password, true), true));
+    ASSERT_EQ(forms.size(), 11u);
+    ASSERT_EQ(std::set<std::string>(forms.begin(), forms.end()).size(), forms.size());
+    for (const auto& form : forms) {
+        FakeWarmupApi api;
+        OfflineWarmupClient client(api);
+        api.replyWith(500, "text/plain", "SMTP login failed: [" + form + "] end");
+        bool rejected = false;
+        client.testSmtpConfiguration("a@b.com", "smtp-user", password, "smtp.example.com", 587,
+            [](std::string) { FAIL() << "success"; },
+            [&](ZBErrorResponse error) {
+                rejected = true;
+                const std::string message = error.toString();
+                EXPECT_NE(message.find("[***] end"), std::string::npos) << form << " -> " << message;
+            });
+        EXPECT_TRUE(rejected) << form;
+    }
 }
 
 TEST(OfflineWarmup, ATextHtml200IsAnErrorOnEveryCall) {

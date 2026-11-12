@@ -293,6 +293,34 @@ TEST(Transport, TheDefaultTimeoutsAreTheDocumentedOnes) {
 
 namespace {
 
+/** The handler ZeroBounceWarmup's public constructor builds. */
+class DefaultHandlerWarmup : public ZeroBounceWarmup {
+public:
+    BaseRequestHandler& handler() { return *defaultRequestHandler; }
+};
+
+}  // namespace
+
+TEST(Transport, TheClientsDefaultHandlersHaveExactlyTheDocumentedTimeouts) {
+    // The exact values, on the handler each public constructor builds and
+    // uses: changing either client's default (to 60 s, say) fails here, not
+    // only removing it. The timed tests below prove the handlers apply them.
+    struct DefaultClient : ZeroBounce {
+        BaseRequestHandler* handler() { return defaultRequestHandler.get(); }
+    } client;
+    DefaultHandlerWarmup warmup;
+    EXPECT_EQ(client.handler(), client.getRequestHandler());
+    EXPECT_EQ(&warmup.handler(), warmup.getRequestHandler());
+    for (BaseRequestHandler* handler : {client.handler(), &warmup.handler()}) {
+        auto* real = dynamic_cast<RequestHandler*>(handler);
+        ASSERT_NE(real, nullptr);
+        EXPECT_EQ(real->timeoutMs(), 120000);
+        EXPECT_EQ(real->connectTimeoutMs(), 30000);
+    }
+}
+
+namespace {
+
 /** The real RequestHandler, with every https URL sent to the local server instead. */
 class LocalRedirector : public RequestHandler {
 public:
@@ -529,9 +557,12 @@ std::vector<TimedCall> callEveryDefaultHandlerAtOnce(const std::function<std::st
     DefaultHandlerClient client;
     BaseDefaultsHandler base;
     std::vector<std::pair<std::string, std::function<cpr::Response()>>> calls;
+    DefaultHandlerWarmup warmup;
     for (const auto& method : everyHandlerMethod()) {
         calls.emplace_back("ZeroBounce() handler " + method.first,
                            [&client, method, url] { return method.second(client.handler(), url()); });
+        calls.emplace_back("ZeroBounceWarmup() handler " + method.first,
+                           [&warmup, method, url] { return method.second(warmup.handler(), url()); });
     }
     for (const auto& method : everyBaseDefaultMethod()) {
         calls.emplace_back("BaseRequestHandler " + method.first,
@@ -564,7 +595,7 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
     constexpr int kHoldMs = BaseRequestHandler::DefaultConnectTimeoutMs + 15000;
     LocalServer server(LocalServer::Mode::Stall, kHoldMs);
     const auto results = callEveryDefaultHandlerAtOnce([&] { return server.url("https", "/stall"); });
-    ASSERT_EQ(results.size(), everyHandlerMethod().size() + 3u);
+    ASSERT_EQ(results.size(), 2 * everyHandlerMethod().size() + 3u);
     for (const auto& result : results) {
         EXPECT_EQ(result.response.status_code, 0) << result.name;
         EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;
@@ -581,7 +612,7 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultTotalTimeout) {
     constexpr int kHoldMs = BaseRequestHandler::DefaultTimeoutMs + 15000;
     LocalServer server(LocalServer::Mode::Stall, kHoldMs);
     const auto results = callEveryDefaultHandlerAtOnce([&] { return server.url("http", "/stall"); });
-    ASSERT_EQ(results.size(), everyHandlerMethod().size() + 3u);
+    ASSERT_EQ(results.size(), 2 * everyHandlerMethod().size() + 3u);
     for (const auto& result : results) {
         EXPECT_EQ(result.response.status_code, 0) << result.name;
         EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;

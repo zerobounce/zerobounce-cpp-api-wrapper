@@ -33,10 +33,11 @@ struct WarmupEmailContent {
 /** When ZeroBounce should send, for zb_managed onboarding. */
 struct WarmupManagedSending {
     /**
-     * Hours from UTC, -11.0 to 14.0; fractional zones such as 5.5 are allowed.
-     * std::optional<int> up to 3.0.1; an int still assigns.
+     * @deprecated Use timezoneOffsetHours, which takes fractional zones such
+     * as 5.5. Whole hours from UTC, -11 to 14; ignored when
+     * timezoneOffsetHours is set.
      */
-    std::optional<double> timezoneOffset;
+    std::optional<int> timezoneOffset;
     /** YYYY-MM-DD. */
     std::optional<std::string> warmupStartDate;
     /** @deprecated Not read by the API (daily limits are not applied), and no longer sent. */
@@ -44,6 +45,13 @@ struct WarmupManagedSending {
     std::optional<bool> weekdaysOnly;
     /** An IANA zone name, for example "Asia/Kolkata". */
     std::optional<std::string> timezone;
+    /**
+     * Hours from UTC, -11.0 to 14.0, fractional zones such as 5.5 (India) or
+     * 5.75 (Nepal) included. Sent as timezone_offset, in place of
+     * timezoneOffset when both are set; a whole number goes out as an
+     * integer (3).
+     */
+    std::optional<double> timezoneOffsetHours;
 };
 
 /** Options for addSendingAccount. */

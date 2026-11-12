@@ -200,6 +200,11 @@ class RequestHandler : public BaseRequestHandler {
         RequestHandler(std::int32_t timeoutMs, std::int32_t connectTimeoutMs)
             : timeout(timeoutMs), connectTimeout(connectTimeoutMs) {}
 
+        /** The total timeout of every request, in milliseconds (120000 by default). */
+        std::int64_t timeoutMs() const { return static_cast<std::int64_t>(timeout.ms.count()); }
+        /** The connect timeout of every request, in milliseconds (30000 by default). */
+        std::int64_t connectTimeoutMs() const { return static_cast<std::int64_t>(connectTimeout.ms.count()); }
+
     protected:
         cpr::Response doGet(const cpr::Url& url) {
             return cpr::Get(url, timeout, connectTimeout, cpr::Redirect{false});

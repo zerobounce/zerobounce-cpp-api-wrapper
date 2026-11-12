@@ -447,8 +447,10 @@ void ZeroBounceWarmup::addSendingAccount(
         json object = json::object();
         if (sending.weekdaysOnly.has_value()) object["weekdays_only"] = *sending.weekdaysOnly;
         if (sending.timezone.has_value()) object["timezone"] = *sending.timezone;
-        if (sending.timezoneOffset.has_value()) {
-            const double offset = *sending.timezoneOffset;
+        // timezoneOffsetHours, when set, wins over the deprecated int.
+        if (sending.timezoneOffsetHours.has_value() || sending.timezoneOffset.has_value()) {
+            const double offset = sending.timezoneOffsetHours.has_value()
+                ? *sending.timezoneOffsetHours : static_cast<double>(*sending.timezoneOffset);
             if (!requireOffset(offset, err)) return;
             // A whole number stays an integer in the JSON (3, not 3.0).
             if (offset == static_cast<double>(static_cast<int>(offset))) {

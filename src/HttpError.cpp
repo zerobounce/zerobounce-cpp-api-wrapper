@@ -303,21 +303,27 @@ std::vector<std::string> zbSecretForms(const std::string& secret) {
         }
         return value;
     };
-    // A body may echo a request body (JSON-escaped, '/' escaped or not), a
-    // request URL or form (URL-encoded, spaces as %20 or '+'), or a JSON body
-    // put into a URL or form (URL-encoded after JSON escaping). The longer,
-    // escaped forms go first: they can contain the raw one.
-    std::vector<std::string> jsonForms;
-    for (bool escapeSlash : {true, false}) {
+    auto jsonEscaped = [](const std::string& value, bool escapeSlash) {
         std::string json;
-        for (char c : secret) {
+        for (char c : value) {
             if (c == '"' || c == '\\' || (escapeSlash && c == '/')) {
                 json += '\\';
             }
             json += c;
         }
-        jsonForms.push_back(json);
+        return json;
+    };
+    // A body may echo a request body (JSON-escaped, '/' escaped or not), an
+    // echoed body quoted inside another JSON string (JSON-escaped twice), a
+    // request URL or form (URL-encoded, spaces as %20 or '+'), or a JSON body
+    // put into a URL or form (URL-encoded after JSON escaping). The longer,
+    // escaped forms go first: they can contain the raw one.
+    std::vector<std::string> jsonForms;
+    for (bool escapeSlash : {true, false}) {
+        jsonForms.push_back(jsonEscaped(secret, escapeSlash));
     }
+    add(jsonEscaped(jsonForms[0], true));
+    add(jsonEscaped(jsonForms[1], false));
     for (const auto& json : jsonForms) {
         std::string encoded = urlEncoded(json);
         if (!encoded.empty()) {
