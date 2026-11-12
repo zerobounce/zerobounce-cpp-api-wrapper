@@ -8,8 +8,12 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <regex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -454,6 +458,39 @@ everyBaseDefaultMethod() {
 
 }  // namespace
 
+TEST(Transport, EveryMethodBaseRequestHandlerImplementsIsTested) {
+    // The methods BaseRequestHandler gives a body are read from the header, so
+    // a default added later (a GET, a POST, a download) must join
+    // everyBaseDefaultMethod and the redirect and timeout tests below. The
+    // others are pure: every handler supplies its own, and RequestHandler's are
+    // covered by the tests above.
+    std::ifstream in(ZB_PUBLIC_HEADER);
+    ASSERT_TRUE(in.good()) << ZB_PUBLIC_HEADER;
+    std::stringstream text;
+    text << in.rdbuf();
+    const std::string header = text.str();
+    const auto begin = header.find("\nclass BaseRequestHandler {");
+    ASSERT_NE(begin, std::string::npos);
+    const auto end = header.find("\n};", begin);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = header.substr(begin, end - begin);
+    std::map<std::string, int> implemented;
+    std::map<std::string, int> pure;
+    const std::regex method(R"(virtual\s+cpr::Response\s+do(\w+)\s*\([^)]*\)\s*(=\s*0|\{))");
+    for (std::sregex_iterator it(body.begin(), body.end(), method), last; it != last; ++it) {
+        ++((*it)[2].str() == "{" ? implemented : pure)[(*it)[1].str()];
+    }
+    EXPECT_EQ(implemented.size() + pure.size(), 5u) << "Get, GetWithParameters, Post, Put, Delete";
+    std::map<std::string, int> tested;
+    for (const auto& m : everyBaseDefaultMethod()) {
+        ++tested[m.first.substr(0, m.first.find('('))];
+    }
+    EXPECT_EQ(tested, implemented);
+    for (const auto& m : implemented) {
+        EXPECT_EQ(pure.count(m.first), 0u) << "do" << m.first << " is both pure and implemented";
+    }
+}
+
 TEST(Transport, TheBaseHandlersPutAndDeleteDoNotFollowRedirects) {
     LocalServer server(LocalServer::Mode::Redirect);
     BaseDefaultsHandler handler;
@@ -486,6 +523,36 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
         threads.emplace_back([&, i] {
             auto started = std::chrono::steady_clock::now();
             responses[i] = methods[i].second(handler, server.url("https", "/stall"));
+            elapsed[i] = std::chrono::steady_clock::now() - started;
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (size_t i = 0; i < methods.size(); ++i) {
+        EXPECT_EQ(responses[i].status_code, 0) << methods[i].first;
+        EXPECT_EQ(responses[i].error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << methods[i].first;
+        EXPECT_LT(elapsed[i], std::chrono::milliseconds(kHoldMs - 5000)) << methods[i].first;
+    }
+}
+
+TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultTotalTimeout) {
+    // Plain http: the connection is made at once, then the server never
+    // answers and holds it for longer than the default total timeout (120 s).
+    // Without cpr::Timeout the calls would wait for the server to give up.
+    // The three calls run at once, so the test takes about 120 s.
+    constexpr int kHoldMs = BaseRequestHandler::DefaultTimeoutMs + 15000;
+    LocalServer server(LocalServer::Mode::Stall, kHoldMs);
+    BaseDefaultsHandler handler;
+    const auto methods = everyBaseDefaultMethod();
+    ASSERT_EQ(methods.size(), 3u);
+    std::vector<cpr::Response> responses(methods.size());
+    std::vector<std::chrono::steady_clock::duration> elapsed(methods.size());
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < methods.size(); ++i) {
+        threads.emplace_back([&, i] {
+            auto started = std::chrono::steady_clock::now();
+            responses[i] = methods[i].second(handler, server.url("http", "/stall"));
             elapsed[i] = std::chrono::steady_clock::now() - started;
         });
     }
