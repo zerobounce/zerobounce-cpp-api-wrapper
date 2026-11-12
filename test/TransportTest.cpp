@@ -38,14 +38,16 @@ namespace {
  * without a timeout still comes back (late) instead of hanging the suite.
  * In Truncate mode it answers 200 with a Content-Length of 1000, sends only
  * kPartialBody, and closes the connection; TruncateStall sends the same and
- * then holds the connection open like Stall.
+ * then holds the connection open like Stall. TruncateJson is Truncate with
+ * kPartialJson, a JSON object that parses on its own, as the body.
  */
 class LocalServer {
 public:
-    enum class Mode { Redirect, Stall, Truncate, TruncateStall };
+    enum class Mode { Redirect, Stall, Truncate, TruncateStall, TruncateJson };
     static constexpr int kStallMs = 4000;
 
-    explicit LocalServer(Mode mode) : mode_(mode) {
+    /** stallMs: how long Stall and TruncateStall hold a connection. */
+    explicit LocalServer(Mode mode, int stallMs = kStallMs) : mode_(mode), stallMs_(stallMs) {
         listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         int yes = 1;
         ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
@@ -102,13 +104,16 @@ private:
                     if (mode_ == Mode::Redirect) {
                         answerRedirect(fd);
                     } else if (mode_ == Mode::Truncate) {
-                        answerPartially(fd);
+                        answerPartially(fd, "text/csv", kPartialBody);
+                        ::close(fd);
+                    } else if (mode_ == Mode::TruncateJson) {
+                        answerPartially(fd, "application/json", kPartialJson);
                         ::close(fd);
                     } else if (mode_ == Mode::TruncateStall) {
-                        answerPartially(fd);
-                        held.push_back({fd, std::chrono::steady_clock::now() + std::chrono::milliseconds(kStallMs)});
+                        answerPartially(fd, "text/csv", kPartialBody);
+                        held.push_back({fd, std::chrono::steady_clock::now() + std::chrono::milliseconds(stallMs_)});
                     } else {
-                        held.push_back({fd, std::chrono::steady_clock::now() + std::chrono::milliseconds(kStallMs)});
+                        held.push_back({fd, std::chrono::steady_clock::now() + std::chrono::milliseconds(stallMs_)});
                     }
                 }
             }
@@ -127,11 +132,10 @@ private:
         }
     }
 
-    void answerPartially(int fd) {
+    void answerPartially(int fd, const std::string& contentType, const std::string& body) {
         readRequest(fd);
-        const std::string response = std::string(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n") +
-            kPartialBody;
+        const std::string response = "HTTP/1.1 200 OK\r\nContent-Type: " + contentType +
+            "\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n" + body;
         ::send(fd, response.data(), response.size(), 0);
     }
 
@@ -188,10 +192,12 @@ private:
 
 public:
     static constexpr const char* kPartialBody = "email\npartial@example.com\n";
+    static constexpr const char* kPartialJson = R"({"Credits":"5","status":"valid","address":"a@example.com"})";
 
 private:
 
     Mode mode_;
+    int stallMs_;
     int listenFd_ = -1;
     int port_ = 0;
     std::atomic<bool> stop_{false};
@@ -303,6 +309,9 @@ protected:
     cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) override {
         return RequestHandler::doGetWithParameters(local(url), parameters);
     }
+    cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) override {
+        return RequestHandler::doPost(local(url), header, body);
+    }
 
 private:
     const LocalServer& server_;
@@ -389,6 +398,104 @@ TEST(Transport, ADownloadCutShortIsAnErrorAndSavesNothing) {
                              onWarmupError);
         warmup.getSeeds([&](std::string) { ADD_FAILURE() << "getSeeds (" << label << "): success"; }, onWarmupError);
         EXPECT_EQ(warmupErrors, 2) << label;
+    }
+}
+
+TEST(Transport, AJsonResponseCutShortIsAnError) {
+    // A 200 header promising 1000 bytes, then a JSON object that parses on
+    // its own and the end of the connection. libcurl reports the transfer as
+    // partial; the JSON calls used to ignore that and return the object.
+    LocalServer server(LocalServer::Mode::TruncateJson);
+    LocalRedirector handler(server, 2000);
+    LocalClient client(handler);
+    ZBValidateOptions post;
+    post.usePost = true;
+    int errors = 0;
+    auto onError = [&](ZBErrorResponse error) {
+        ++errors;
+        EXPECT_EQ(error.statusCode, 0);
+        EXPECT_NE(error.toString().find("cut short"), std::string::npos) << error.toString();
+        EXPECT_EQ(error.toString().find("cut-short-key"), std::string::npos);
+    };
+    client.getCredits([](ZBCreditsResponse) { ADD_FAILURE() << "getCredits: success"; }, onError);
+    client.validate("a@example.com", "", post,
+        [](ZBValidateResponse) { ADD_FAILURE() << "validate (POST): success"; }, onError);
+    client.listFilters(false, [](std::string) { ADD_FAILURE() << "listFilters: success"; }, onError);
+    EXPECT_EQ(errors, 3);
+}
+
+namespace {
+
+/**
+ * A handler that keeps BaseRequestHandler's own PUT and DELETE, as a
+ * subclass written before those were added does. The pure methods are never
+ * called here.
+ */
+class BaseDefaultsHandler : public BaseRequestHandler {
+protected:
+    cpr::Response doGet(const cpr::Url&) override { return {}; }
+    cpr::Response doGet(const cpr::Url&, const cpr::Header&) override { return {}; }
+    cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) override { return {}; }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return {}; }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Multipart&) override { return {}; }
+};
+
+/** The request methods BaseRequestHandler implements itself. */
+std::vector<std::pair<std::string, std::function<cpr::Response(BaseRequestHandler&, const std::string&)>>>
+everyBaseDefaultMethod() {
+    std::vector<std::pair<std::string, std::function<cpr::Response(BaseRequestHandler&, const std::string&)>>> out;
+    for (auto& method : everyHandlerMethod()) {
+        if (method.first.rfind("Put", 0) == 0 || method.first.rfind("Delete", 0) == 0) {
+            out.push_back(method);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST(Transport, TheBaseHandlersPutAndDeleteDoNotFollowRedirects) {
+    LocalServer server(LocalServer::Mode::Redirect);
+    BaseDefaultsHandler handler;
+    const auto methods = everyBaseDefaultMethod();
+    ASSERT_EQ(methods.size(), 3u);
+    for (const auto& method : methods) {
+        cpr::Response response = method.second(handler, server.url("http", "/start"));
+        EXPECT_EQ(response.status_code, 302) << method.first;
+    }
+    for (const auto& path : server.paths()) {
+        EXPECT_EQ(path.find("/landed"), std::string::npos) << path;
+    }
+    EXPECT_EQ(server.paths().size(), methods.size());
+}
+
+TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
+    // A TLS handshake the server never answers, held for longer than the
+    // default connect timeout (30 s) and shorter than the total one (120 s):
+    // only the connect timeout ends it in time. The three calls run at once,
+    // so the test takes about 30 s.
+    constexpr int kHoldMs = BaseRequestHandler::DefaultConnectTimeoutMs + 15000;
+    LocalServer server(LocalServer::Mode::Stall, kHoldMs);
+    BaseDefaultsHandler handler;
+    const auto methods = everyBaseDefaultMethod();
+    ASSERT_EQ(methods.size(), 3u);
+    std::vector<cpr::Response> responses(methods.size());
+    std::vector<std::chrono::steady_clock::duration> elapsed(methods.size());
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < methods.size(); ++i) {
+        threads.emplace_back([&, i] {
+            auto started = std::chrono::steady_clock::now();
+            responses[i] = methods[i].second(handler, server.url("https", "/stall"));
+            elapsed[i] = std::chrono::steady_clock::now() - started;
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (size_t i = 0; i < methods.size(); ++i) {
+        EXPECT_EQ(responses[i].status_code, 0) << methods[i].first;
+        EXPECT_EQ(responses[i].error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << methods[i].first;
+        EXPECT_LT(elapsed[i], std::chrono::milliseconds(kHoldMs - 5000)) << methods[i].first;
     }
 }
 

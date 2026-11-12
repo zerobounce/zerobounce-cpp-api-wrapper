@@ -7,6 +7,9 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -2240,3 +2243,314 @@ TEST(OfflineApi, AShortWriteIsAnErrorAndLeavesNoPartialFile) {
     std::filesystem::remove_all(dir);
 }
 #endif
+
+namespace {
+
+/**
+ * Answers every request, PUT and DELETE included, with an HTTP 200 and the
+ * body of the call being made. Complete sends the body whole; CutShort
+ * promises 500 bytes more than it sends, as a connection closed part-way
+ * through does; TimedOut adds libcurl's read-timeout error, its message
+ * quoting the request URL with the key in it; NoStatus has the body but
+ * status 0, as from a handler that got no HTTP response.
+ */
+class TruncatingApi : public BaseRequestHandler {
+public:
+    enum class Mode { Complete, CutShort, TimedOut, NoStatus };
+    Mode mode = Mode::Complete;
+    std::string body;
+    std::string key;
+
+protected:
+    cpr::Response reply() const {
+        cpr::Response response;
+        response.status_code = mode == Mode::NoStatus ? 0 : 200;
+        response.text = body;
+        const bool isJson = !body.empty() && (body.front() == '{' || body.front() == '[');
+        response.header["Content-Type"] = isJson ? "application/json" : "text/csv";
+        response.header["Content-Length"] =
+            std::to_string(body.size() + (mode == Mode::CutShort ? 500 : 0));
+        if (mode == Mode::TimedOut) {
+            response.error.code = cpr::ErrorCode::OPERATION_TIMEDOUT;
+            response.error.message = "Operation timed out after 120000 milliseconds reading "
+                "https://api.zerobounce.net/v2/validate?api_key=" + key;
+        }
+        return response;
+    }
+    cpr::Response doGet(const cpr::Url&) override { return reply(); }
+    cpr::Response doGet(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Multipart&) override { return reply(); }
+    cpr::Response doPut(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doDelete(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doDelete(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+};
+
+class TruncatingClient : public ZeroBounce {
+public:
+    explicit TruncatingClient(TruncatingApi& api) {
+        initialize(api.key);
+        requestHandler = &api;
+    }
+};
+
+/**
+ * One call of a public request method. `body` is a complete answer the
+ * method accepts as a result; `download` methods write it to `path`.
+ */
+struct PublicCall {
+    std::string name;
+    std::string body;
+    bool download;
+    std::function<void(const std::string& path, std::function<void()> ok, OnErrorCallback err)> run;
+};
+
+/**
+ * Every public request method of ZeroBounce, overloads included. A name is
+ * the method's name, optionally followed by a space and a label for the
+ * overload. EveryPublicRequestMethodIsInTheSweep keeps it complete.
+ */
+std::vector<PublicCall> everyPublicCall(ZeroBounce& client) {
+    using Err = OnErrorCallback;
+    using Ok = std::function<void()>;
+    // One object every JSON call accepts as a result: the bulk submissions
+    // need "message", the batch call its two lists.
+    const std::string object =
+        R"({"success":true,"message":"File Accepted","file_id":"fid","email_batch":[],"errors":[]})";
+    const std::string csv = "email\nsweep@example.com\n";
+    auto call = [](std::string name, std::string body, std::function<void(Ok, Err)> run) {
+        return PublicCall{std::move(name), std::move(body), false,
+                          [run](const std::string&, Ok ok, Err err) { run(ok, err); }};
+    };
+    auto download = [&](std::string name, std::function<void(const std::string&, Ok, Err)> run) {
+        return PublicCall{std::move(name), csv, true, std::move(run)};
+    };
+    auto any = [](Ok ok) { return [ok](auto) { ok(); }; };
+    std::tm day{};
+    day.tm_year = 120;
+    day.tm_mday = 1;
+    ZBValidateOptions post;
+    post.usePost = true;
+    SendFileOptions sendOptions;
+    GetFileOptions getOptions;
+    EmailFinderSendFileOptions finder;
+    finder.firstNameColumn = 2;
+    BulkFileJobOptions job;
+    job.fileName = "f.csv";
+    job.returnUrl = "https://example.com/done";
+    ValidateS3FileOptions s3;
+    s3.fileName = "f.csv";
+    s3.returnUrl = "https://example.com/done";
+    ScoreS3FileOptions score;
+    score.fileName = "f.csv";
+    score.returnUrl = "https://example.com/done";
+    ZeroBounce& c = client;
+    std::vector<PublicCall> calls{
+        call("getCredits", object, [&c, any](Ok ok, Err err) { c.getCredits(any(ok), err); }),
+        call("getApiUsage", object, [&c, any, day](Ok ok, Err err) { c.getApiUsage(day, day, any(ok), err); }),
+        call("validate", object, [&c, any](Ok ok, Err err) { c.validate("a@example.com", "", any(ok), err); }),
+        call("validate POST", object, [&c, any, post](Ok ok, Err err) {
+            c.validate("a@example.com", "", post, any(ok), err);
+        }),
+        call("validateBatch", object, [&c, any](Ok ok, Err err) { c.validateBatch({{"a@example.com"}}, any(ok), err); }),
+        call("validateBatch options", object, [&c, any](Ok ok, Err err) {
+            c.validateBatch({{"a@example.com"}}, ZBValidateOptions{}, any(ok), err);
+        }),
+        call("getActivityData", object, [&c, any](Ok ok, Err err) { c.getActivityData("a@example.com", any(ok), err); }),
+        call("scoreEmail", object, [&c, any](Ok ok, Err err) { c.scoreEmail("a@example.com", any(ok), err); }),
+        call("scoreEmailPost", object, [&c, any](Ok ok, Err err) { c.scoreEmailPost("a@example.com", any(ok), err); }),
+        call("sendFile", object, [&c, any, sendOptions](Ok ok, Err err) { c.sendFile(kCsv, 1, sendOptions, any(ok), err); }),
+        call("fileStatus", object, [&c, any](Ok ok, Err err) { c.fileStatus("fid", any(ok), err); }),
+        download("getFile", [&c, any](const std::string& p, Ok ok, Err err) { c.getFile("fid", p, any(ok), err); }),
+        download("getFileWithOptions", [&c, any, getOptions](const std::string& p, Ok ok, Err err) {
+            c.getFileWithOptions("fid", p, getOptions, any(ok), err);
+        }),
+        call("deleteFile", object, [&c, any](Ok ok, Err err) { c.deleteFile("fid", any(ok), err); }),
+        call("scoringSendFile", object, [&c, any, sendOptions](Ok ok, Err err) {
+            c.scoringSendFile(kCsv, 1, sendOptions, any(ok), err);
+        }),
+        call("scoringFileStatus", object, [&c, any](Ok ok, Err err) { c.scoringFileStatus("fid", any(ok), err); }),
+        download("scoringGetFile", [&c, any](const std::string& p, Ok ok, Err err) {
+            c.scoringGetFile("fid", p, any(ok), err);
+        }),
+        download("scoringGetFileWithOptions", [&c, any, getOptions](const std::string& p, Ok ok, Err err) {
+            c.scoringGetFileWithOptions("fid", p, getOptions, any(ok), err);
+        }),
+        call("scoringDeleteFile", object, [&c, any](Ok ok, Err err) { c.scoringDeleteFile("fid", any(ok), err); }),
+        call("sendEmailFinderFile", object, [&c, any, finder](Ok ok, Err err) {
+            c.sendEmailFinderFile(kCsv, 1, &finder, any(ok), err);
+        }),
+        call("emailFinderFileStatus", object, [&c, any](Ok ok, Err err) { c.emailFinderFileStatus("fid", any(ok), err); }),
+        download("emailFinderGetFile", [&c, any](const std::string& p, Ok ok, Err err) {
+            c.emailFinderGetFile("fid", p, any(ok), err);
+        }),
+        call("emailFinderDeleteFile", object, [&c, any](Ok ok, Err err) { c.emailFinderDeleteFile("fid", any(ok), err); }),
+        call("sendDomainSearchFile", object, [&c, any](Ok ok, Err err) {
+            c.sendDomainSearchFile(kCsv, 1, nullptr, any(ok), err);
+        }),
+        call("domainSearchFileStatus", object, [&c, any](Ok ok, Err err) { c.domainSearchFileStatus("fid", any(ok), err); }),
+        download("domainSearchGetFile", [&c, any](const std::string& p, Ok ok, Err err) {
+            c.domainSearchGetFile("fid", p, any(ok), err);
+        }),
+        call("domainSearchDeleteFile", object, [&c, any](Ok ok, Err err) { c.domainSearchDeleteFile("fid", any(ok), err); }),
+        call("sendListEvaluatorFile", object, [&c, any](Ok ok, Err err) { c.sendListEvaluatorFile(kCsv, 1, any(ok), err); }),
+        call("getListEvaluatorResult", object, [&c, any](Ok ok, Err err) { c.getListEvaluatorResult("fid", any(ok), err); }),
+        call("sendEvaluatedFile", object, [&c, any](Ok ok, Err err) { c.sendEvaluatedFile("fid", any(ok), err); }),
+        call("addFilter", object, [&c, any](Ok ok, Err err) { c.addFilter("allow", "domain", "example.com", any(ok), err); }),
+        call("listFilters", object, [&c, any](Ok ok, Err err) { c.listFilters(false, any(ok), err); }),
+        call("listFilters POST", object, [&c, any](Ok ok, Err err) { c.listFilters(true, any(ok), err); }),
+        call("deleteFilter", object, [&c, any](Ok ok, Err err) {
+            c.deleteFilter("allow", "domain", "example.com", any(ok), err);
+        }),
+        call("validateS3File", object, [&c, any, s3](Ok ok, Err err) { c.validateS3File(s3, any(ok), err); }),
+        call("scoreS3File", object, [&c, any, score](Ok ok, Err err) { c.scoreS3File(score, any(ok), err); }),
+        call("exportS3File", object, [&c, any](Ok ok, Err err) { c.exportS3File("fid", std::nullopt, any(ok), err); }),
+        call("listS3files", "[]", [&c, any](Ok ok, Err err) { c.listS3files(std::nullopt, std::nullopt, any(ok), err); }),
+        call("emailFinderS3File", object, [&c, any, job](Ok ok, Err err) { c.emailFinderS3File(job, any(ok), err); }),
+        call("domainSearchS3File", object, [&c, any, job](Ok ok, Err err) { c.domainSearchS3File(job, any(ok), err); }),
+        call("validateSFTPFile", object, [&c, any, job](Ok ok, Err err) { c.validateSFTPFile(job, any(ok), err); }),
+        call("scoreSFTPFile", object, [&c, any, job](Ok ok, Err err) { c.scoreSFTPFile(job, any(ok), err); }),
+        call("emailFinderSFTPFile", object, [&c, any, job](Ok ok, Err err) { c.emailFinderSFTPFile(job, any(ok), err); }),
+        call("domainSearchSFTPFile", object, [&c, any, job](Ok ok, Err err) { c.domainSearchSFTPFile(job, any(ok), err); }),
+        call("exportSFTPFile", object, [&c, any](Ok ok, Err err) { c.exportSFTPFile("fid", std::nullopt, any(ok), err); }),
+        call("getInboxPlacementProviders", object, [&c, any](Ok ok, Err err) { c.getInboxPlacementProviders(any(ok), err); }),
+        call("getInboxPlacementTestTypes", object, [&c, any](Ok ok, Err err) { c.getInboxPlacementTestTypes(any(ok), err); }),
+        call("createInboxPlacementTest", object, [&c, any](Ok ok, Err err) {
+            c.createInboxPlacementTest("t", CreateInboxPlacementTestOptions{}, any(ok), err);
+        }),
+        call("getInboxPlacementTest", object, [&c, any](Ok ok, Err err) { c.getInboxPlacementTest("t1", any(ok), err); }),
+        call("listInboxPlacementTests", object, [&c, any](Ok ok, Err err) {
+            c.listInboxPlacementTests(ListInboxPlacementTestsOptions{}, any(ok), err);
+        }),
+        call("deleteInboxPlacementTest", object, [&c, any](Ok ok, Err err) { c.deleteInboxPlacementTest("t1", any(ok), err); }),
+        call("getInboxPlacementWebhook", object, [&c, any](Ok ok, Err err) { c.getInboxPlacementWebhook(any(ok), err); }),
+        call("setInboxPlacementWebhook", object, [&c, any](Ok ok, Err err) {
+            c.setInboxPlacementWebhook("https://example.com/hook", any(ok), err);
+        }),
+        call("findEmailByDomain 4", object, [&c, any](Ok ok, Err err) {
+            c.findEmailByDomain("example.com", "A", "B", "C", any(ok), err);
+        }),
+        call("findEmailByDomain 3", object, [&c, any](Ok ok, Err err) { c.findEmailByDomain("example.com", "A", "C", any(ok), err); }),
+        call("findEmailByDomain 2", object, [&c, any](Ok ok, Err err) { c.findEmailByDomain("example.com", "A", any(ok), err); }),
+        call("findEmailByCompanyName 4", object, [&c, any](Ok ok, Err err) {
+            c.findEmailByCompanyName("Co", "A", "B", "C", any(ok), err);
+        }),
+        call("findEmailByCompanyName 3", object, [&c, any](Ok ok, Err err) {
+            c.findEmailByCompanyName("Co", "A", "C", any(ok), err);
+        }),
+        call("findEmailByCompanyName 2", object, [&c, any](Ok ok, Err err) { c.findEmailByCompanyName("Co", "A", any(ok), err); }),
+        call("searchDomainByDomain", object, [&c, any](Ok ok, Err err) { c.searchDomainByDomain("example.com", any(ok), err); }),
+        call("searchDomainByCompanyName", object, [&c, any](Ok ok, Err err) { c.searchDomainByCompanyName("Co", any(ok), err); }),
+    };
+    // GCC allows no #pragma inside the braces above.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    calls.push_back(call("findEmail 4", object, [&c, any](Ok ok, Err err) {
+        c.findEmail("example.com", "A", "B", "C", any(ok), err);
+    }));
+    calls.push_back(call("findEmail 3", object, [&c, any](Ok ok, Err err) {
+        c.findEmail("example.com", "A", "C", any(ok), err);
+    }));
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    return calls;
+}
+
+}  // namespace
+
+TEST(OfflineApi, EveryPublicRequestMethodIsInTheSweep) {
+    // The public request methods are read from the header itself, so a new
+    // method that everyPublicCall does not cover fails here.
+    std::ifstream in(ZB_PUBLIC_HEADER);
+    ASSERT_TRUE(in.good()) << ZB_PUBLIC_HEADER;
+    std::stringstream text;
+    text << in.rdbuf();
+    const std::string header = text.str();
+    const auto begin = header.find("\nclass ZeroBounce {");
+    ASSERT_NE(begin, std::string::npos);
+    const auto end = header.find("\n};", begin);
+    ASSERT_NE(end, std::string::npos);
+    std::set<std::string> declared;
+    bool isPublic = false;
+    std::istringstream lines(header.substr(begin, end - begin));
+    const std::regex access(R"(^\s*(public|protected|private):)");
+    const std::regex method(R"(^\s*(?:\[\[[^\]]*\]\]\s*)?void\s+(\w+)\s*\()");
+    for (std::string line; std::getline(lines, line);) {
+        std::smatch match;
+        if (std::regex_search(line, match, access)) {
+            isPublic = match[1] == "public";
+        } else if (isPublic && std::regex_search(line, match, method)) {
+            const std::string name = match[1];
+            // Configuration, not requests.
+            if (name != "initialize" && name.rfind("set", 0) != 0) {
+                declared.insert(name);
+            }
+        }
+    }
+    EXPECT_GT(declared.size(), 50u);
+    // setInboxPlacementWebhook is a request despite its prefix.
+    declared.insert("setInboxPlacementWebhook");
+
+    ZeroBounce client;
+    std::set<std::string> swept;
+    for (const auto& call : everyPublicCall(client)) {
+        swept.insert(call.name.substr(0, call.name.find(' ')));
+    }
+    for (const auto& name : declared) {
+        EXPECT_TRUE(swept.count(name)) << name << " is missing from everyPublicCall";
+    }
+    for (const auto& name : swept) {
+        EXPECT_TRUE(declared.count(name)) << name << " is not a public method of ZeroBounce";
+    }
+}
+
+TEST(OfflineApi, EveryCallTreatsAResponseCutShortAsAnError) {
+    // A 200 whose body stops before its Content-Length, or that timed out
+    // part-way, is a transport failure on every path: status 0, the key
+    // masked, no result. The JSON calls used to return whatever prefix had
+    // arrived as a result whenever it parsed.
+    TruncatingApi api;
+    api.key = "cut-short-sweep-key";
+    TruncatingClient client(api);
+    const auto dir = freshTempDir("json-cut-short");
+    for (const auto& call : everyPublicCall(client)) {
+        api.body = call.body;
+        const std::string path = (dir / "out.csv").string();
+
+        api.mode = TruncatingApi::Mode::Complete;
+        int successes = 0;
+        call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+            ADD_FAILURE() << call.name << " (complete): " << error.toString();
+        });
+        // The control: the whole body is a result, so the cut-short runs
+        // below fail only because of the transport check.
+        EXPECT_EQ(successes, 1) << call.name << " (complete)";
+        std::filesystem::remove(path);
+
+        for (auto mode : {TruncatingApi::Mode::CutShort, TruncatingApi::Mode::TimedOut,
+                          TruncatingApi::Mode::NoStatus}) {
+            const char* label = mode == TruncatingApi::Mode::CutShort ? "cut short"
+                : mode == TruncatingApi::Mode::TimedOut ? "timed out" : "no status";
+            const char* expected = mode == TruncatingApi::Mode::NoStatus ? "Could not reach" : "cut short";
+            api.mode = mode;
+            int errors = 0;
+            call.run(path, [&] { ADD_FAILURE() << call.name << " (" << label << "): success"; },
+                [&](ZBErrorResponse error) {
+                    ++errors;
+                    EXPECT_EQ(error.statusCode, 0) << call.name << " (" << label << ")";
+                    ASSERT_FALSE(error.errors.empty());
+                    EXPECT_NE(error.errors.front().find(expected), std::string::npos)
+                        << call.name << " (" << label << "): " << error.errors.front();
+                    EXPECT_EQ(error.toString().find(api.key), std::string::npos)
+                        << call.name << " (" << label << "): " << error.toString();
+                });
+            EXPECT_EQ(errors, 1) << call.name << " (" << label << ")";
+            EXPECT_FALSE(std::filesystem::exists(path)) << call.name << " (" << label << ") saved a file";
+        }
+    }
+    std::filesystem::remove_all(dir);
+}

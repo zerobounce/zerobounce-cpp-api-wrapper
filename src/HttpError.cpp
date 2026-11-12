@@ -204,7 +204,9 @@ void zbReportHttpError(
     errorCallback(ZBErrorResponse::parseError(zbMessageFromBody(body, statusCode), statusCode));
 }
 
-bool zbReadJsonResponse(
+// The body checks of zbReadJsonResponse, once the transport check has passed.
+// File-local, so that no call can read a body without that check.
+static bool zbReadJsonBody(
     long statusCode,
     const std::string& body,
     json& out,
@@ -238,13 +240,13 @@ bool zbReadJsonResponse(
     return true;
 }
 
-bool zbReadNonMessageJsonResponse(
+static bool zbReadNonMessageJsonBody(
     long statusCode,
     const std::string& body,
     json& out,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
-    if (!zbReadJsonResponse(statusCode, body, out, errorCallback)) {
+    if (!zbReadJsonBody(statusCode, body, out, errorCallback)) {
         return false;
     }
     // LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
@@ -320,6 +322,56 @@ std::string zbTransportErrorMessage(const cpr::Response& response) {
         (detail.empty() ? std::string("the body is shorter than its Content-Length") : detail);
 }
 
+bool zbReportTransportFailure(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    if (!zbTransportFailed(response)) {
+        return false;
+    }
+    // No response, or only part of one: the connection was refused,
+    // closed early, timed out or failed its TLS handshake.
+    std::string message = zbTransportErrorMessage(response);
+    if (!apiKey.empty()) {
+        for (size_t at = 0; (at = message.find(apiKey, at)) != std::string::npos; at += 3) {
+            message.replace(at, apiKey.size(), "***");
+        }
+    }
+    if (errorCallback) {
+        // Status 0: no complete HTTP response arrived.
+        errorCallback(ZBErrorResponse::parseError(message, 0));
+    }
+    return true;
+}
+
+bool zbReadJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    // Checked before the body: a 200 cut short before its Content-Length (or
+    // with a read timeout part-way) used to be a result whenever the part that
+    // arrived happened to parse as JSON.
+    if (zbReportTransportFailure(response, apiKey, errorCallback)) {
+        return false;
+    }
+    return zbReadJsonBody(response.status_code, response.text, out, errorCallback);
+}
+
+bool zbReadNonMessageJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    if (zbReportTransportFailure(response, apiKey, errorCallback)) {
+        return false;
+    }
+    return zbReadNonMessageJsonBody(response.status_code, response.text, out, errorCallback);
+}
+
 bool zbReportFailedDownload(
     const cpr::Response& response,
     const std::string& apiKey,
@@ -328,19 +380,7 @@ bool zbReportFailedDownload(
     // Checked before the status: a body cut short after a 200 header (the
     // connection closed, or the read timed out) has a 2xx status and a
     // transport error, and used to be saved as though it were the whole file.
-    if (zbTransportFailed(response)) {
-        // No response, or only part of one: the connection was refused,
-        // closed early, timed out or failed its TLS handshake.
-        std::string message = zbTransportErrorMessage(response);
-        if (!apiKey.empty()) {
-            for (size_t at = 0; (at = message.find(apiKey, at)) != std::string::npos; at += 3) {
-                message.replace(at, apiKey.size(), "***");
-            }
-        }
-        if (errorCallback) {
-            // Status 0: no complete HTTP response arrived.
-            errorCallback(ZBErrorResponse::parseError(message, 0));
-        }
+    if (zbReportTransportFailure(response, apiKey, errorCallback)) {
         return true;
     }
     if (response.status_code >= 200 && response.status_code <= 299) {
