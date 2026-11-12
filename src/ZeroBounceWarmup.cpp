@@ -128,6 +128,23 @@ std::string redact(const std::string& text, const std::vector<std::string>& secr
     return value;
 }
 
+/**
+ * Reports an error with the client's key, and any other secret of the call
+ * (the SMTP credentials), masked. Every error built from a response or a
+ * transport failure goes through here, so a new path cannot forget the key.
+ */
+void reportWarmupError(
+    ZeroBounceWarmup* zb,
+    const OnErrorCallback& errorCallback,
+    const std::string& message,
+    const std::vector<std::string>& extraSecrets,
+    long statusCode = 0
+) {
+    std::vector<std::string> secrets{zb->getApiKey()};
+    secrets.insert(secrets.end(), extraSecrets.begin(), extraSecrets.end());
+    reportError(errorCallback, redact(message, secrets), statusCode);
+}
+
 struct WarmupResult {
     long statusCode = 0;
     std::string contentType;
@@ -177,10 +194,6 @@ bool warmupSend(
     WarmupResult& out,
     const OnErrorCallback& errorCallback
 ) {
-    // The key is masked out of every message, whatever else the caller adds.
-    std::vector<std::string> secrets{zb->getApiKey()};
-    secrets.insert(secrets.end(), extraSecrets.begin(), extraSecrets.end());
-
     const cpr::Header jsonHeader{
         {"Accept", "application/json"},
         {"Content-Type", "application/json"},
@@ -208,7 +221,7 @@ bool warmupSend(
             response = zb->getRequestHandler()->Get(cpr::Url{url}, plainHeader);
         }
     } catch (const std::exception& error) {
-        reportError(errorCallback, redact(error.what(), secrets));
+        reportWarmupError(zb, errorCallback, error.what(), extraSecrets);
         return false;
     }
 
@@ -216,7 +229,7 @@ bool warmupSend(
     // short is an error. Only statuses of 300 and up used to be, so a failed
     // connection reached the success callback with the payload "null".
     if (zbTransportFailed(response)) {
-        reportError(errorCallback, redact(zbTransportErrorMessage(response), secrets), 0);
+        reportWarmupError(zb, errorCallback, zbTransportErrorMessage(response), extraSecrets, 0);
         return false;
     }
 
@@ -231,8 +244,8 @@ bool warmupSend(
         return false;
     }
     if (out.statusCode > 299) {
-        reportError(errorCallback,
-            redact(zbMessageFromBody(out.body, out.statusCode), secrets), out.statusCode);
+        reportWarmupError(zb, errorCallback, zbMessageFromBody(out.body, out.statusCode), extraSecrets,
+            out.statusCode);
         return false;
     }
     return true;
@@ -267,8 +280,9 @@ bool warmupJson(
     try {
         payload = json::parse(result.body).dump();
     } catch (const std::exception&) {
-        reportError(errorCallback,
-            redact(zbMessageFromBody(result.body, result.statusCode), secrets), result.statusCode);
+        // The key too: a 200 that is not JSON may quote it.
+        reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), secrets,
+            result.statusCode);
         return false;
     }
     if (successCallback) {
@@ -291,9 +305,14 @@ bool warmupCsv(
     std::transform(lowerType.begin(), lowerType.end(), lowerType.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
-    if (trimmed(result.body).empty() || lowerType.find("application/json") != std::string::npos) {
-        reportError(errorCallback,
-            redact(zbMessageFromBody(result.body, result.statusCode), {zb->getApiKey()}),
+    // An error comes back labelled as JSON or HTML, so it is not a file: an
+    // empty body, a JSON or HTML content type, a JSON object or array, or an
+    // HTML page.
+    const std::string body = trimmed(result.body);
+    if (body.empty() || body.front() == '{' || body.front() == '[' ||
+        lowerType.find("application/json") != std::string::npos ||
+        zbContentTypeIsHtml(result.contentType) || zbBodyLooksLikeHtml(result.body)) {
+        reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), {},
             result.statusCode);
         return false;
     }
@@ -319,6 +338,15 @@ bool requireRange(int value, int low, int high, const char* name, const OnErrorC
         return false;
     }
     return true;
+}
+
+/** -11.0 to 14.0; NaN is out of range too. */
+bool requireOffset(double value, const OnErrorCallback& errorCallback) {
+    if (value >= -11.0 && value <= 14.0) {
+        return true;
+    }
+    reportError(errorCallback, "timezone_offset must be -11 to 14");
+    return false;
 }
 
 bool engagementBody(
@@ -407,17 +435,29 @@ void ZeroBounceWarmup::addSendingAccount(
             }
             object["types_of_emails"] = content.typesOfEmails;
         }
-        if (content.industry.has_value()) object["industry"] = *content.industry;
         if (content.companyName.has_value()) object["company_name"] = *content.companyName;
-        if (content.website.has_value()) object["website"] = *content.website;
+        // industry is not read by the API and is not sent; the deprecated
+        // website is the documented company_website.
+        const auto& website = content.companyWebsite.has_value() ? content.companyWebsite : content.website;
+        if (website.has_value()) object["company_website"] = *website;
+        if (content.companyDescription.has_value()) object["company_description"] = *content.companyDescription;
+        if (content.exampleEmail.has_value()) object["example_email"] = *content.exampleEmail;
         body["email_content"] = object;
     }
     if (options.managedSending.has_value()) {
         const auto& sending = *options.managedSending;
         json object = json::object();
+        if (sending.weekdaysOnly.has_value()) object["weekdays_only"] = *sending.weekdaysOnly;
+        if (sending.timezone.has_value()) object["timezone"] = *sending.timezone;
         if (sending.timezoneOffset.has_value()) {
-            if (!requireRange(*sending.timezoneOffset, -11, 14, "timezone_offset", err)) return;
-            object["timezone_offset"] = *sending.timezoneOffset;
+            const double offset = *sending.timezoneOffset;
+            if (!requireOffset(offset, err)) return;
+            // A whole number stays an integer in the JSON (3, not 3.0).
+            if (offset == static_cast<double>(static_cast<int>(offset))) {
+                object["timezone_offset"] = static_cast<int>(offset);
+            } else {
+                object["timezone_offset"] = offset;
+            }
         }
         if (sending.warmupStartDate.has_value()) {
             if (!isIsoDate(*sending.warmupStartDate)) {
@@ -426,7 +466,8 @@ void ZeroBounceWarmup::addSendingAccount(
             }
             object["warmup_start_date"] = *sending.warmupStartDate;
         }
-        if (sending.dailyLimit.has_value()) object["daily_limit"] = *sending.dailyLimit;
+        // daily_limit is not read by the API (daily limits are not applied)
+        // and is not sent.
         body["managed_sending"] = object;
     }
 

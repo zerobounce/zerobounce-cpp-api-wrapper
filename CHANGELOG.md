@@ -11,10 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Every JSON call (`validate`, `getCredits`, `validateBatch`, `sendFile`, the file status and delete calls, the email finder and domain search, the S3 and SFTP file jobs, the filters, the Inbox Placement Tester and the rest) ignored the transport error. A response cut short after its HTTP 200 header (the connection closed before `Content-Length` bytes arrived, or the read timed out part-way) was returned as a result whenever the part that arrived parsed as JSON. They now call the error callback with `The response from ZeroBounce was cut short: <transport error>` and `statusCode` 0, as the downloads do, with the API key masked out of the message. A request that got no response at all now reports `Could not reach ZeroBounce: <transport error>` instead of `Empty response from ZeroBounce (HTTP 0)`; the status is 0 either way. The Warmup client is not affected.
 - **Behaviour change:** `deleteInboxPlacementTest` reported an empty 2xx body, the API's answer to a successful delete, as an error (`Empty response from ZeroBounce (HTTP 200)`). It now calls the success callback with `"{}"`, as the C SDK does. An empty 2xx from any other call, the other Inbox Placement calls included, and an empty non-2xx from any call stay errors with their status.
+- `ZeroBounceWarmup::addSendingAccount` sent `email_content` and `managed_sending` in a shape the API does not read: `industry`, `website` and `daily_limit`, and it could not send `company_website`, `company_description`, `example_email`, `weekdays_only` or `timezone` ([adding a sending account](https://www.zerobounce.net/docs/warmup-api/adding-a-sending-account)). `WarmupEmailContent` gains `companyWebsite`, `companyDescription` and `exampleEmail`, and `WarmupManagedSending` gains `weekdaysOnly` and `timezone`, all added at the end so positional initialisers keep compiling. A set `website` is now sent as `company_website` (unless `companyWebsite` is set); `industry` and `dailyLimit` are no longer sent.
+- `ZeroBounceWarmup::downloadSeeds` and `downloadStatistics` handed a non-file answer to the success callback when it was not labelled `application/json`: a JSON object or array under `text/csv`, or an HTML page (by content type or by body). They now report an error with the status for an empty body, a JSON or HTML content type, a JSON object or array, or an HTML page.
 
 ### Security
 
 - An error built from a response body could carry the API key: the main `ZeroBounce` client masked the key only in transport errors, so `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting the key, or a body quoting the request URL with `api_key=<key>` (URL-encoded) reached the error callback whole, on every call. Every error the client delivers now has the key, raw and URL-encoded, replaced by `***`. `ZeroBounceWarmup` already did this.
+- A Warmup call answered with an HTTP 200 body that is not JSON (a proxy's text, `Invalid API-Key <key>`) reported the body with the Warmup key in it, on every JSON call; for `testSmtpConfiguration` the SMTP username and password too. That error masked only the call's extra secrets, not the key. Every Warmup error now goes through one function that masks the key, raw and URL-encoded, together with the call's own secrets.
+
+### Changed
+
+- `WarmupManagedSending::timezoneOffset` is now `std::optional<double>` (it was `std::optional<int>`), so fractional zones such as 5.5 (India) or 5.75 (Nepal) can be sent; a value outside -11 to 14, or NaN, is rejected before anything is sent, and a whole number is sent as before (`"timezone_offset":3`). Assigning an `int` keeps compiling; code that reads it into an `int` gets a narrowing conversion.
+
+### Deprecated
+
+- `WarmupEmailContent::industry`, `WarmupEmailContent::website` (use `companyWebsite`) and `WarmupManagedSending::dailyLimit`: the API does not read them. They are documented as deprecated rather than marked `[[deprecated]]`, since clang would then warn in every implicit copy or move of the struct, also for callers that never use them.
+
+### Added
+
+- Offline tests: a Warmup sweep over every public request method, checked against the methods declared in `ZeroBounceWarmup.h`, answering each with 200 JSON (`error`, `success: false`, `message`, `detail`), 200 text, 400 text and 400 JSON bodies that quote the key raw and URL-encoded and the SMTP credentials; the exact `add_sending_account` body with every documented field; the deprecated fields; fractional `timezone_offset` values (5.5, 3.0 and 5.75 accepted, -11.5, 14.5 and NaN rejected); the CSV downloads rejecting every non-file answer.
 
 ## [3.0.1] - 2026-11-11
 

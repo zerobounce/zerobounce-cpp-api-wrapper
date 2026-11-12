@@ -9,22 +9,41 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 
-/** What ZeroBounce should send on your behalf, for zb_managed onboarding. */
+/**
+ * What ZeroBounce should send on your behalf, for zb_managed onboarding
+ * (https://www.zerobounce.net/docs/warmup-api/adding-a-sending-account).
+ * New fields are added at the end, so positional initialisers keep working.
+ * The deprecated fields carry no [[deprecated]] attribute: clang would warn
+ * in every implicit copy and move of the struct, also for callers that never
+ * use them.
+ */
 struct WarmupEmailContent {
     /** Any of "transactional", "newsletter", "marketing". */
     std::vector<std::string> typesOfEmails;
+    /** @deprecated Not read by the API, and no longer sent. */
     std::optional<std::string> industry;
     std::optional<std::string> companyName;
+    /** @deprecated Use companyWebsite. Sent as company_website unless companyWebsite is set. */
     std::optional<std::string> website;
+    std::optional<std::string> companyWebsite;
+    std::optional<std::string> companyDescription;
+    std::optional<std::string> exampleEmail;
 };
 
 /** When ZeroBounce should send, for zb_managed onboarding. */
 struct WarmupManagedSending {
-    /** -11 to 14. */
-    std::optional<int> timezoneOffset;
+    /**
+     * Hours from UTC, -11.0 to 14.0; fractional zones such as 5.5 are allowed.
+     * std::optional<int> up to 3.0.1; an int still assigns.
+     */
+    std::optional<double> timezoneOffset;
     /** YYYY-MM-DD. */
     std::optional<std::string> warmupStartDate;
+    /** @deprecated Not read by the API (daily limits are not applied), and no longer sent. */
     std::optional<int> dailyLimit;
+    std::optional<bool> weekdaysOnly;
+    /** An IANA zone name, for example "Asia/Kolkata". */
+    std::optional<std::string> timezone;
 };
 
 /** Options for addSendingAccount. */

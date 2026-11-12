@@ -2,7 +2,12 @@
 // every request and answers without the network.
 
 #include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <functional>
 #include <map>
+#include <regex>
+#include <sstream>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -740,4 +745,251 @@ TEST(OfflineWarmup, NoResponseIsAnErrorNotANullSuccess) {
     client.createCustomEngagement("a@example.com", 10, 10, 5, unexpected, onError);
     client.downloadSeeds(unexpected, onError);
     EXPECT_EQ(errors, 6);
+}
+
+// -- add_sending_account payload ---------------------------------------------
+
+TEST(OfflineWarmup, AddSendingAccountSendsEveryDocumentedField) {
+    // https://www.zerobounce.net/docs/warmup-api/adding-a-sending-account
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    WarmupAddSendingAccountOptions options;
+    options.ignoreConflict = true;
+    WarmupEmailContent content;
+    content.companyName = "Example";
+    content.companyWebsite = "https://example.com";
+    content.companyDescription = "We sell \"things\"";
+    content.typesOfEmails = {"transactional", "newsletter", "marketing"};
+    content.exampleEmail = "Hello,\nWelcome.";
+    options.emailContent = content;
+    WarmupManagedSending sending;
+    sending.weekdaysOnly = false;
+    sending.timezone = "Asia/Kolkata";
+    sending.timezoneOffset = 5.5;
+    sending.warmupStartDate = "2026-11-02";
+    options.managedSending = sending;
+    client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+    EXPECT_EQ(onlyRequest(api).body,
+        R"({"email_content":{"company_description":"We sell \"things\"",)"
+        R"("company_name":"Example","company_website":"https://example.com",)"
+        R"("example_email":"Hello,\nWelcome.","types_of_emails":["transactional","newsletter","marketing"]},)"
+        R"("from_address":"sender@example.com","ignore_conflict":true,)"
+        R"("managed_sending":{"timezone":"Asia/Kolkata","timezone_offset":5.5,"warmup_start_date":"2026-11-02",)"
+        R"("weekdays_only":false},"onboarding_model":"zb_managed"})");
+}
+
+TEST(OfflineWarmup, TheDeprecatedFieldsStillCompileButOnlyTheWebsiteIsSent) {
+    // industry, website and daily_limit are not read by the API. website is
+    // the documented company_website; the other two are no longer sent.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    WarmupAddSendingAccountOptions options;
+    options.emailContent = WarmupEmailContent{{"marketing"}, std::string("Retail"), std::string("Example"),
+                                              std::string("https://old.example.com")};
+    WarmupManagedSending sending{3, std::string("2026-11-02"), 50};
+    options.managedSending = sending;
+    client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+    auto body = json::parse(onlyRequest(api).body);
+    EXPECT_EQ(body["email_content"], json::parse(
+        R"({"company_name":"Example","company_website":"https://old.example.com","types_of_emails":["marketing"]})"));
+    EXPECT_EQ(body["managed_sending"], json::parse(R"({"timezone_offset":3,"warmup_start_date":"2026-11-02"})"));
+
+    // company_website wins over the deprecated website.
+    options.emailContent->companyWebsite = "https://new.example.com";
+    client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+    EXPECT_EQ(json::parse(onlyRequest(api).body)["email_content"]["company_website"], "https://new.example.com");
+}
+
+TEST(OfflineWarmup, TheTimezoneOffsetMayBeFractional) {
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    const std::vector<std::pair<double, std::string>> accepted{
+        {5.5, "5.5"}, {3.0, "3"}, {-11.0, "-11"}, {14.0, "14"}, {-9.5, "-9.5"}, {5.75, "5.75"}};
+    for (const auto& [offset, sent] : accepted) {
+        WarmupAddSendingAccountOptions options;
+        WarmupManagedSending sending;
+        sending.timezoneOffset = offset;
+        options.managedSending = sending;
+        client.addSendingAccount("sender@example.com", "zb_managed", options, succeed, failOnError);
+        EXPECT_EQ(onlyRequest(api).body,
+            R"({"from_address":"sender@example.com","managed_sending":{"timezone_offset":)" + sent +
+            R"(},"onboarding_model":"zb_managed"})");
+    }
+    for (double offset : {-11.5, 14.5, 15.0, -12.0, std::nan("")}) {
+        WarmupAddSendingAccountOptions options;
+        WarmupManagedSending sending;
+        sending.timezoneOffset = offset;
+        options.managedSending = sending;
+        std::string message = captureError([&](auto ok, auto err) {
+            client.addSendingAccount("sender@example.com", "zb_managed", options, ok, err);
+        });
+        EXPECT_NE(message.find("timezone_offset"), std::string::npos) << offset << ": " << message;
+    }
+    EXPECT_EQ(api.size(), 0u);
+}
+
+// -- CSV downloads -------------------------------------------------------------
+
+TEST(OfflineWarmup, CsvDownloadsRejectEveryNonFileAnswer) {
+    // D1-D3: a JSON body or content type, an HTML page by body or content
+    // type, and an empty body are errors with the status, not CSV text.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    const std::vector<std::pair<std::string, std::string>> answers{
+        {"text/csv", R"({"message":"No seeds"})"},
+        {"text/csv", " \n [{\"error\":\"nope\"}]"},
+        {"text/csv", ""},
+        {"text/csv", "<!DOCTYPE html><html><title>Blocked</title></html>"},
+        {"text/html; charset=utf-8", "Blocked"},
+        {"application/json", "seed,provider\n"},
+    };
+    for (const auto& [type, body] : answers) {
+        for (int call = 0; call < 2; ++call) {
+            api.replyWith(200, type, body);
+            bool rejected = false;
+            auto onError = [&, type = type, body = body](ZBErrorResponse error) {
+                rejected = true;
+                EXPECT_EQ(error.statusCode, 200) << type << " " << body;
+            };
+            auto onCsv = [&, type = type, body = body](std::string) { ADD_FAILURE() << type << " " << body; };
+            if (call == 0) {
+                client.downloadSeeds(onCsv, onError);
+            } else {
+                client.downloadStatistics("a@b.com", onCsv, onError);
+            }
+            EXPECT_TRUE(rejected) << call << ": " << type << " " << body;
+            api.take();
+        }
+    }
+}
+
+// -- the Warmup key and the SMTP credentials in every error --------------------
+
+namespace {
+
+const std::string kLeakKey = "leak-W4rm/x+y";
+const std::string kLeakKeyEscaped = "leak-W4rm%2Fx%2By";
+const std::string kSmtpUser = "smtp-user-42";
+const std::string kSmtpPassword = "smtp-pass-77";
+
+using WarmupCall = std::function<void(ZeroBounceWarmup&, OnRawJsonSuccessCallback, OnErrorCallback)>;
+
+/// Every public request method of ZeroBounceWarmup, overloads included, with
+/// valid arguments. EveryWarmupRequestMethodIsInTheSweep reads the header and
+/// fails when one is missing.
+std::vector<std::pair<std::string, WarmupCall>> everyWarmupCall() {
+    WarmupAddSendingAccountOptions selfManaged;
+    selfManaged.engagementRuleId = 2;
+    return {
+        {"listSendingAccounts", [](auto& c, auto ok, auto err) { c.listSendingAccounts(ok, err); }},
+        {"getSendingAccount", [](auto& c, auto ok, auto err) { c.getSendingAccount("a@b.com", ok, err); }},
+        {"addSendingAccount", [selfManaged](auto& c, auto ok, auto err) {
+            c.addSendingAccount("a@b.com", "self_managed", selfManaged, ok, err); }},
+        {"updateSendingAccount", [](auto& c, auto ok, auto err) {
+            c.updateSendingAccount("a@b.com", 1, 4, true, ok, err); }},
+        {"deleteSendingAccount", [](auto& c, auto ok, auto err) { c.deleteSendingAccount("a@b.com", ok, err); }},
+        {"changeFromAddress", [](auto& c, auto ok, auto err) { c.changeFromAddress("a@b.com", "c@d.com", ok, err); }},
+        {"listFromAddresses", [](auto& c, auto ok, auto err) { c.listFromAddresses({}, ok, err); }},
+        {"getEngagementRules", [](auto& c, auto ok, auto err) { c.getEngagementRules(ok, err); }},
+        {"setEngagementRule", [](auto& c, auto ok, auto err) { c.setEngagementRule("a@b.com", 2, ok, err); }},
+        {"getCustomEngagement", [](auto& c, auto ok, auto err) { c.getCustomEngagement("a@b.com", ok, err); }},
+        {"createCustomEngagement", [](auto& c, auto ok, auto err) {
+            c.createCustomEngagement("a@b.com", 10, 10, 5, ok, err); }},
+        {"updateCustomEngagement", [](auto& c, auto ok, auto err) {
+            c.updateCustomEngagement("a@b.com", 10, 10, 5, ok, err); }},
+        {"deleteCustomEngagement", [](auto& c, auto ok, auto err) { c.deleteCustomEngagement("a@b.com", 1, ok, err); }},
+        {"getSeeds", [](auto& c, auto ok, auto err) { c.getSeeds(ok, err); }},
+        {"downloadSeeds", [](auto& c, auto ok, auto err) { c.downloadSeeds(ok, err); }},
+        {"getSeedCount", [](auto& c, auto ok, auto err) { c.getSeedCount(ok, err); }},
+        {"getProgressToday", [](auto& c, auto ok, auto err) { c.getProgressToday(ok, err); }},
+        {"getSentToday", [](auto& c, auto ok, auto err) { c.getSentToday(ok, err); }},
+        {"getEmailsPerDay", [](auto& c, auto ok, auto err) { c.getEmailsPerDay(ok, err); }},
+        {"getStatistics", [](auto& c, auto ok, auto err) { c.getStatistics("a@b.com", ok, err); }},
+        {"getStatisticsPerDay", [](auto& c, auto ok, auto err) {
+            c.getStatisticsPerDay("a@b.com", "2026-01-01", "2026-01-07", ok, err); }},
+        {"getStatisticsDetailed", [](auto& c, auto ok, auto err) { c.getStatisticsDetailed("a@b.com", ok, err); }},
+        {"downloadStatistics", [](auto& c, auto ok, auto err) { c.downloadStatistics("a@b.com", ok, err); }},
+        {"getFromAddressStatistics", [](auto& c, auto ok, auto err) {
+            c.getFromAddressStatistics("a@b.com", ok, err); }},
+        {"checkDomainDmarc", [](auto& c, auto ok, auto err) { c.checkDomainDmarc("a@b.com", "sel", ok, err); }},
+        {"testSmtpConfiguration", [](auto& c, auto ok, auto err) {
+            c.testSmtpConfiguration("a@b.com", kSmtpUser, kSmtpPassword, "smtp.example.com", 587, ok, err); }},
+    };
+}
+
+}  // namespace
+
+TEST(OfflineWarmup, EveryWarmupRequestMethodIsInTheSweep) {
+    std::string path = ZB_PUBLIC_HEADER;
+    path = path.substr(0, path.size() - std::string("ZeroBounce.h").size()) + "ZeroBounceWarmup.h";
+    std::ifstream in(path);
+    ASSERT_TRUE(in.good()) << path;
+    std::stringstream text;
+    text << in.rdbuf();
+    const std::string header = text.str();
+    const auto begin = header.find("\nclass ZeroBounceWarmup {");
+    ASSERT_NE(begin, std::string::npos);
+    const std::string body = header.substr(begin, header.find("\n};", begin) - begin);
+    std::map<std::string, int> declared;
+    const std::regex method(R"(void\s+(\w+)\s*\(([^;{]*)\)\s*;)");
+    for (std::sregex_iterator it(body.begin(), body.end(), method), last; it != last; ++it) {
+        if ((*it)[2].str().find("OnErrorCallback") != std::string::npos) {
+            ++declared[(*it)[1].str()];
+        }
+    }
+    EXPECT_GT(declared.size(), 20u);
+    std::map<std::string, int> swept;
+    for (const auto& call : everyWarmupCall()) {
+        ++swept[call.first];
+    }
+    EXPECT_EQ(swept, declared);
+}
+
+TEST(OfflineWarmup, NoErrorOnAnyCallCarriesTheKeyOrTheSmtpCredentials) {
+    // Standard section 3: the key is never in an error. Each body quotes the
+    // key raw and URL-encoded, and the SMTP credentials. A 200 JSON body is a
+    // result for the JSON calls but an error for the CSV downloads; a 200
+    // that is not JSON is an error for the JSON calls.
+    const std::string quoted = kLeakKey + " " + kLeakKeyEscaped + " " + kSmtpUser + " " + kSmtpPassword;
+    struct Answer {
+        long status;
+        std::string type;
+        std::string body;
+    };
+    const std::vector<Answer> answers{
+        {200, "application/json", R"({"error":"Invalid API key )" + quoted + R"("})"},
+        {200, "application/json", R"({"success":false,"message":"Bad key )" + quoted + R"("})"},
+        {200, "application/json", R"({"message":"Invalid API-Key )" + quoted + R"("})"},
+        {200, "application/json", R"({"detail":"Invalid API-Key )" + quoted + R"("})"},
+        {200, "text/plain", "Invalid API-Key " + quoted},
+        {400, "text/plain", "Bad Request: GET https://warmup-api.zerobounce.net/api/v1/warmup/seeds?key=" + quoted},
+        {400, "application/json", R"({"error":"Bad key )" + quoted + R"("})"},
+    };
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api, kLeakKey);
+    for (const auto& answer : answers) {
+        for (const auto& [name, call] : everyWarmupCall()) {
+            api.replyWith(answer.status, answer.type, answer.body);
+            const bool csv = name.rfind("download", 0) == 0;
+            const bool json200 = answer.status == 200 && answer.type == "application/json";
+            const bool mustFail = answer.status >= 300 || (csv ? json200 : !json200);
+            const std::string label = name + " / " + std::to_string(answer.status) + " " + answer.body;
+            bool failed = false;
+            call(client, [](std::string) {}, [&](ZBErrorResponse error) {
+                failed = true;
+                const std::string message = error.toString();
+                EXPECT_EQ(error.statusCode, answer.status) << label;
+                for (const auto& secret : {kLeakKey, kLeakKeyEscaped}) {
+                    EXPECT_EQ(message.find(secret), std::string::npos) << label << ": " << message;
+                }
+                if (name == "testSmtpConfiguration") {
+                    for (const auto& secret : {kSmtpUser, kSmtpPassword}) {
+                        EXPECT_EQ(message.find(secret), std::string::npos) << label << ": " << message;
+                    }
+                }
+            });
+            EXPECT_EQ(failed, mustFail) << label;
+            EXPECT_EQ(api.take().size(), 1u) << label;
+        }
+    }
 }
