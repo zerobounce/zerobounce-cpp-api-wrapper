@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <cpr/cpr.h>
@@ -549,6 +550,7 @@ TEST(OfflineApi, SendFileEncodesBooleansAndKeepsZeroColumn) {
     options.allowPhase2IsSet = true;
     options.allowPhase2 = false;
     options.removeDuplicate = false;
+    options.removeDuplicateSet = true;
     options.hasHeaderRow = true;
     client.sendFile(
         kCsv,
@@ -2101,12 +2103,47 @@ TEST(OfflineApi, SendFileSendsRemoveDuplicateOnlyWhenSet) {
         auto request = send(options);
         EXPECT_EQ(request.fields.count("remove_duplicate"), 0u) << scoring;
         EXPECT_EQ(request.fields["has_header_row"], "true") << scoring;
+        // A value without removeDuplicateSet is not sent either, so code
+        // written for 3.0.1 that assigns it keeps compiling.
         for (bool value : {false, true}) {
             options.removeDuplicate = value;
+            options.removeDuplicateSet = false;
+            request = send(options);
+            EXPECT_EQ(request.fields.count("remove_duplicate"), 0u) << scoring;
+        }
+        for (bool value : {false, true}) {
+            options.removeDuplicate = value;
+            options.removeDuplicateSet = true;
             request = send(options);
             EXPECT_EQ(request.fields["remove_duplicate"], value ? "true" : "false") << scoring;
         }
     }
+}
+
+// SendFileOptions keeps the 3.0.1 shape: removeDuplicate is a plain bool
+// (reading it into a bool and taking a bool pointer compile), and
+// removeDuplicateSet comes last, so an aggregate initialiser written for
+// 3.0.1 compiles and leaves it unset.
+static_assert(std::is_same_v<decltype(SendFileOptions::removeDuplicate), bool>,
+              "removeDuplicate must stay a bool");
+
+TEST(OfflineApi, SendFileOptionsStaySourceCompatible) {
+    SendFileOptions options;
+    bool b = options.removeDuplicate;
+    bool* p = &options.removeDuplicate;
+    EXPECT_TRUE(b);
+    *p = false;
+    EXPECT_FALSE(options.removeDuplicate);
+    EXPECT_FALSE(options.removeDuplicateSet);
+    SendFileOptions positional{"", 0, 0, 0, 0, true, false, false, false};
+    EXPECT_FALSE(positional.removeDuplicateSet);
+
+    FakeApi api;
+    OfflineClient client(api, "file-key");
+    client.sendFile(
+        kCsv, 1, positional, [](ZBSendFileResponse) {},
+        [](ZBErrorResponse error) { FAIL() << error.toString(); });
+    EXPECT_EQ(onlyRequest(api).fields.count("remove_duplicate"), 0u);
 }
 
 #ifndef _WIN32
@@ -2158,6 +2195,69 @@ TEST(OfflineApi, AShortWriteIsAnErrorAndLeavesNoPartialFile) {
         EXPECT_NE(outcomes[i].message.find("Could not write"), std::string::npos)
             << downloads[i].first << ": " << outcomes[i].message;
         EXPECT_FALSE(outcomes[i].exists) << downloads[i].first << " left a truncated file";
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AFailedWriteKeepsTheFileAlreadyAtThePath) {
+    // D4: the downloads opened the target with trunc and removed it after a
+    // short write, so a file size limit (or a full disk) destroyed a result
+    // that was already there. They now write beside it and move the file
+    // into place only when complete.
+    FakeApi api;
+    OfflineClient client(api, "keep-existing-key");
+    const auto dir = freshTempDir("keep-existing");
+    const std::vector<std::pair<std::string, std::function<void(const std::string&, OnErrorCallback)>>> downloads{
+        {"getFile", [&](const std::string& p, OnErrorCallback e) { client.getFile("fid", p, nullptr, e); }},
+        {"scoringGetFile", [&](const std::string& p, OnErrorCallback e) { client.scoringGetFile("fid", p, nullptr, e); }},
+        {"emailFinderGetFile", [&](const std::string& p, OnErrorCallback e) {
+            client.emailFinderGetFile("fid", p, nullptr, e);
+        }},
+        {"domainSearchGetFile", [&](const std::string& p, OnErrorCallback e) {
+            client.domainSearchGetFile("fid", p, nullptr, e);
+        }},
+    };
+    auto readAll = [](const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    auto countEntries = [&]() {
+        return std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{});
+    };
+    const auto path = dir / "result.csv";
+    struct Outcome {
+        int errors = 0;
+        std::string kept;
+        long entries = 0;
+    };
+    std::vector<Outcome> outcomes(downloads.size());
+
+    rlimit saved{};
+    ASSERT_EQ(::getrlimit(RLIMIT_FSIZE, &saved), 0);
+    auto previous = std::signal(SIGXFSZ, SIG_IGN);
+    rlimit tight = saved;
+    tight.rlim_cur = 8;
+    for (size_t i = 0; i < downloads.size(); ++i) {
+        { std::ofstream(path, std::ios::binary) << "OLD"; }
+        ASSERT_EQ(::setrlimit(RLIMIT_FSIZE, &tight), 0);
+        downloads[i].second(path.string(), [&, i](ZBErrorResponse) { outcomes[i].errors++; });
+        ::setrlimit(RLIMIT_FSIZE, &saved);
+        outcomes[i].kept = readAll(path);
+        outcomes[i].entries = static_cast<long>(countEntries());
+    }
+    std::signal(SIGXFSZ, previous);
+
+    for (size_t i = 0; i < downloads.size(); ++i) {
+        EXPECT_EQ(outcomes[i].errors, 1) << downloads[i].first;
+        EXPECT_EQ(outcomes[i].kept, "OLD") << downloads[i].first << " destroyed the file already there";
+        EXPECT_EQ(outcomes[i].entries, 1) << downloads[i].first << " left a partial file beside it";
+    }
+    // Without the limit each download replaces the old file.
+    for (size_t i = 0; i < downloads.size(); ++i) {
+        { std::ofstream(path, std::ios::binary) << "OLD"; }
+        downloads[i].second(path.string(), [&](ZBErrorResponse error) { ADD_FAILURE() << error.toString(); });
+        EXPECT_NE(readAll(path), "OLD") << downloads[i].first;
+        EXPECT_EQ(countEntries(), 1) << downloads[i].first;
     }
     std::filesystem::remove_all(dir);
 }
@@ -2612,6 +2712,45 @@ TEST(OfflineApi, NoErrorCarriesTheKey) {
                 }
                 // The message is kept with the key masked, not dropped.
                 EXPECT_NE(text.find("***"), std::string::npos) << label << ": " << text;
+            });
+            EXPECT_EQ(api.requests, 1) << label;
+            EXPECT_EQ(errors, 1) << label;
+            EXPECT_FALSE(std::filesystem::exists(path)) << label << " saved a file";
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, TheContentTypeAloneMakesA200AnError) {
+    // A 200 labelled text/html whose body parses as JSON is a proxy's or a
+    // portal's page, not the API's answer; a file-looking body labelled
+    // application/json is the API's error in place of a file (and not JSON a
+    // JSON call can read). Each is an error with the status on every call, and
+    // no file is written: the content-type half of each guard is what
+    // catches these bodies.
+    struct Answer {
+        std::string contentType;
+        std::string body;
+    };
+    const std::vector<Answer> answers{
+        {"text/html; charset=UTF-8", R"({"a":1})"},
+        {"application/json", "email\nlabelled-json@example.com\n"},
+    };
+    EchoingApi api;
+    EchoingClient client(api, "content-type-key");
+    const auto dir = freshTempDir("content-type");
+    const std::string path = (dir / "out.csv").string();
+    for (const auto& answer : answers) {
+        api.status = 200;
+        api.contentType = answer.contentType;
+        api.body = answer.body;
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + " (" + answer.contentType + ")";
+            api.requests = 0;
+            int errors = 0;
+            call.run(path, [&] { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << label << ": " << error.toString();
             });
             EXPECT_EQ(api.requests, 1) << label;
             EXPECT_EQ(errors, 1) << label;

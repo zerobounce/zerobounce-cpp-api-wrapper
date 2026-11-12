@@ -1,11 +1,13 @@
 #include "HttpError.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <random>
 #include <vector>
 
 #include <curl/curl.h>
@@ -207,15 +209,26 @@ void zbReportHttpError(
     errorCallback(ZBErrorResponse::parseError(zbMessageFromBody(body, statusCode), statusCode));
 }
 
+// The Content-Type header of a response ("" when there is none). cpr's header
+// map compares names without regard to case.
+static std::string zbResponseContentType(const cpr::Response& response) {
+    auto it = response.header.find("Content-Type");
+    return it == response.header.end() ? std::string() : it->second;
+}
+
 // The body checks of zbReadJsonResponse, once the transport check has passed.
 // File-local, so that no call can read a body without that check.
 static bool zbReadJsonBody(
     long statusCode,
     const std::string& body,
+    const std::string& contentType,
     json& out,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
-    if (statusCode > 299 || zbBodyLooksLikeHtml(body) || trimCopy(body).empty()) {
+    // A text/html page is a proxy's or a portal's, not the API's answer, even
+    // when its body happens to parse as JSON.
+    if (statusCode > 299 || zbBodyLooksLikeHtml(body) || zbContentTypeIsHtml(contentType) ||
+        trimCopy(body).empty()) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
@@ -246,10 +259,11 @@ static bool zbReadJsonBody(
 static bool zbReadNonMessageJsonBody(
     long statusCode,
     const std::string& body,
+    const std::string& contentType,
     json& out,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
-    if (!zbReadJsonBody(statusCode, body, out, errorCallback)) {
+    if (!zbReadJsonBody(statusCode, body, contentType, out, errorCallback)) {
         return false;
     }
     // LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
@@ -272,9 +286,28 @@ std::vector<std::string> zbSecretForms(const std::string& secret) {
             forms.push_back(std::move(form));
         }
     };
-    // A body may echo a request body (JSON-escaped, '/' escaped or not) or a
-    // request URL (URL-encoded). The escaped forms go first: they can contain
-    // the raw one.
+    auto urlEncoded = [](const std::string& value) {
+        std::string out;
+        char* escaped = curl_easy_escape(nullptr, value.c_str(), static_cast<int>(value.size()));
+        if (escaped) {
+            out = escaped;
+            curl_free(escaped);
+        }
+        return out;
+    };
+    // The same, with every %20 written as '+', as a form body has it.
+    auto plusForSpaces = [](std::string value) {
+        for (size_t at = 0; (at = value.find("%20", at)) != std::string::npos;) {
+            value.replace(at, 3, "+");
+            at += 1;
+        }
+        return value;
+    };
+    // A body may echo a request body (JSON-escaped, '/' escaped or not), a
+    // request URL or form (URL-encoded, spaces as %20 or '+'), or a JSON body
+    // put into a URL or form (URL-encoded after JSON escaping). The longer,
+    // escaped forms go first: they can contain the raw one.
+    std::vector<std::string> jsonForms;
     for (bool escapeSlash : {true, false}) {
         std::string json;
         for (char c : secret) {
@@ -283,12 +316,22 @@ std::vector<std::string> zbSecretForms(const std::string& secret) {
             }
             json += c;
         }
+        jsonForms.push_back(json);
+    }
+    for (const auto& json : jsonForms) {
+        std::string encoded = urlEncoded(json);
+        if (!encoded.empty()) {
+            add(encoded);
+            add(plusForSpaces(encoded));
+        }
+    }
+    for (const auto& json : jsonForms) {
         add(json);
     }
-    char* escaped = curl_easy_escape(nullptr, secret.c_str(), static_cast<int>(secret.size()));
-    if (escaped) {
-        add(escaped);
-        curl_free(escaped);
+    std::string encoded = urlEncoded(secret);
+    if (!encoded.empty()) {
+        add(encoded);
+        add(plusForSpaces(encoded));
     }
     add(secret);
     return forms;
@@ -405,7 +448,7 @@ bool zbReadJsonResponse(
     if (zbReportTransportFailure(response, apiKey, errorCallback)) {
         return false;
     }
-    return zbReadJsonBody(response.status_code, response.text, out, errorCallback);
+    return zbReadJsonBody(response.status_code, response.text, zbResponseContentType(response), out, errorCallback);
 }
 
 bool zbReadNonMessageJsonResponse(
@@ -417,7 +460,8 @@ bool zbReadNonMessageJsonResponse(
     if (zbReportTransportFailure(response, apiKey, errorCallback)) {
         return false;
     }
-    return zbReadNonMessageJsonBody(response.status_code, response.text, out, errorCallback);
+    return zbReadNonMessageJsonBody(
+        response.status_code, response.text, zbResponseContentType(response), out, errorCallback);
 }
 
 bool zbReportFailedDownload(
@@ -477,17 +521,30 @@ bool zbSaveDownload(
             return fail("Could not create the directory for " + localPath + ": " + ec.message());
         }
     }
-    std::ofstream out(filePath, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
+    // Written beside the target and moved over it only when complete, so a
+    // failed write (a full disk, a file size limit) neither leaves a partial
+    // file nor destroys a file already at the path. The name is unique among
+    // concurrent downloads to the same path.
+    static std::atomic<unsigned long long> counter{0};
+    std::random_device random;
+    fs::path tempPath = filePath;
+    tempPath += "." + std::to_string(random()) + "-" + std::to_string(++counter) + ".part";
+    std::ofstream out(tempPath, std::ofstream::out | std::ofstream::binary | std::ofstream::trunc);
     if (!out) {
         return fail("Could not open " + localPath + " for writing");
     }
     out.write(body.data(), static_cast<std::streamsize>(body.size()));
     out.close();
     if (!out) {
-        // A short write (a full disk, a file size limit) leaves part of the
-        // file behind; it is removed rather than left looking like a result.
-        fs::remove(filePath, ec);
+        fs::remove(tempPath, ec);
         return fail("Could not write " + localPath);
+    }
+    // std::filesystem::rename replaces an existing file, on Windows too.
+    fs::rename(tempPath, filePath, ec);
+    if (ec) {
+        std::error_code ignored;
+        fs::remove(tempPath, ignored);
+        return fail("Could not write " + localPath + ": " + ec.message());
     }
     return true;
 }

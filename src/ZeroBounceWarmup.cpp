@@ -265,6 +265,13 @@ bool warmupJson(
         }
         return true;
     }
+    // A text/html page is a proxy's or a portal's, not the API's answer, even
+    // when its body parses as JSON.
+    if (zbContentTypeIsHtml(result.contentType)) {
+        reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), secrets,
+            result.statusCode);
+        return false;
+    }
     // Only the parse is guarded: an exception thrown by the caller's callback
     // reaches the caller instead of being reported as an API error.
     std::string payload;

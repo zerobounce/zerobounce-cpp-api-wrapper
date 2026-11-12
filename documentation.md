@@ -160,7 +160,8 @@ options.lastNameColumn = 5;		// The index of "last name" column in the file
 options.genderColumn = 6;		// The index of "gender" column in the file
 options.ipAddressColumn = 7;		// The index of "IP address" column in the file
 options.hasHeaderRow = true;		// If this is `true` the first row is considered as table headers
-options.removeDuplicate = true;	// Optional: `false` keeps duplicate emails; leave unset for the API default (true)
+options.removeDuplicate = false;	// Optional: `false` keeps duplicate emails (the API default is true)
+options.removeDuplicateSet = true;	// Send removeDuplicate; left false, it is not sent
 
 ZeroBounce::getInstance()->sendFile(
     filePath,

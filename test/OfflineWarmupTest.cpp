@@ -1036,3 +1036,60 @@ TEST(OfflineWarmup, NoErrorOnAnyCallCarriesTheKeyOrTheSmtpCredentials) {
         }
     }
 }
+
+TEST(OfflineWarmup, TheSmtpPasswordIsMaskedInEveryEncodedForm) {
+    // A password with a space and every character JSON or URL encoding
+    // changes, quoted in every form a server echoing the request could use.
+    // Written out by hand, so each form zbSecretForms knows is needed:
+    // dropping any one leaves its bracket unmasked.
+    const std::string password = "a b\"c/d+e%f&g=h<i>j'k\\l";
+    const std::vector<std::string> forms{
+        "a b\"c/d+e%f&g=h<i>j'k\\l",
+        // JSON-escaped, '/' escaped and not
+        "a b\\\"c\\/d+e%f&g=h<i>j'k\\\\l",
+        "a b\\\"c/d+e%f&g=h<i>j'k\\\\l",
+        // URL-encoded, space as %20 and as '+'
+        "a%20b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+        "a+b%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5Cl",
+        // URL-encoded after JSON escaping, each JSON form, %20 and '+'
+        "a%20b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a+b%5C%22c%5C%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a%20b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+        "a+b%5C%22c%2Fd%2Be%25f%26g%3Dh%3Ci%3Ej%27k%5C%5Cl",
+    };
+    std::string body = "SMTP login failed:";
+    std::string expected = "SMTP login failed:";
+    for (const auto& form : forms) {
+        body += " [" + form + "]";
+        expected += " [***]";
+    }
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    api.replyWith(500, "text/plain", body);
+    bool rejected = false;
+    client.testSmtpConfiguration("a@b.com", "smtp-user", password, "smtp.example.com", 587,
+        [](std::string) { FAIL() << "success"; },
+        [&](ZBErrorResponse error) {
+            rejected = true;
+            const std::string message = error.toString();
+            EXPECT_NE(message.find(expected), std::string::npos) << message;
+        });
+    EXPECT_TRUE(rejected);
+}
+
+TEST(OfflineWarmup, ATextHtml200IsAnErrorOnEveryCall) {
+    // A 200 labelled text/html is a proxy's or a portal's page, not the API's
+    // answer, even when its body parses as JSON.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    for (const auto& [name, call] : everyWarmupCall()) {
+        api.replyWith(200, "text/html; charset=UTF-8", R"({"a":1})");
+        bool failed = false;
+        call(client, [&](std::string) { ADD_FAILURE() << name << " succeeded"; }, [&](ZBErrorResponse error) {
+            failed = true;
+            EXPECT_EQ(error.statusCode, 200) << name;
+        });
+        EXPECT_TRUE(failed) << name;
+        EXPECT_EQ(api.take().size(), 1u) << name;
+    }
+}
