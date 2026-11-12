@@ -68,11 +68,11 @@ void postSendFileForm(
             cpr::Body{body}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed)) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -97,7 +97,7 @@ void sendRawJsonGet(
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -134,7 +134,7 @@ void sendRawJsonFormPost(
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -162,11 +162,11 @@ void bulkRootMultipart(
             multipart
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed)) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -596,11 +596,11 @@ void ZeroBounce::listS3files(
             cpr::Header{{"Accept", "application/json"}}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed, ZbJsonShape::Array)) {
             outcome.succeed(ZBS3ListFileEntry::listFromJson(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -803,8 +803,9 @@ void iptRequest(
             );
         }
         json parsed;
-        const bool emptyBody = std::all_of(reqResponse.text.begin(), reqResponse.text.end(),
-            [](unsigned char c) { return std::isspace(c) != 0; });
+        // Only a zero-byte body is the documented empty success; a body of
+        // only whitespace is not JSON, so it is an error.
+        const bool emptyBody = reqResponse.text.empty();
         if (method == "DELETE" && emptyBody && !zbTransportFailed(reqResponse) &&
             reqResponse.status_code >= 200 && reqResponse.status_code <= 299) {
             // DELETE answers with an empty body: a success with an empty
@@ -814,7 +815,7 @@ void iptRequest(
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }

@@ -1201,16 +1201,17 @@ TEST(OfflineWarmup, EveryJsonCallTakesOnlyStrictJson) {
     // application/json (test/fixtures/strict-json-corpus.tsv, see
     // OfflineApiTest.cpp): a REJECT body is an error with status 200, an
     // ACCEPT body the result. The CSV downloads take any application/json
-    // answer as an error; an empty or blank 2xx stays a JSON call's
-    // documented empty success.
+    // answer as an error; an empty (zero-byte) 2xx stays a JSON call's
+    // documented empty success, and a blank one is an error.
     FakeWarmupApi api;
     OfflineWarmupClient client(api);
     for (const auto& [accept, body, line] : strictJsonCorpus()) {
         for (const auto& [name, call] : everyWarmupCall()) {
             api.replyWith(200, "application/json", body);
             const bool csv = name.rfind("download", 0) == 0;
-            const bool blank = body.find_first_not_of(" \t\r\n") == std::string::npos;
-            const bool success = !csv && (accept || blank);
+            // Only a zero-byte body is the documented empty success; a blank
+            // one is not JSON.
+            const bool success = !csv && (accept || body.empty());
             const std::string label = name + " with " + line;
             int successes = 0;
             int errors = 0;
@@ -1265,6 +1266,26 @@ TEST(OfflineWarmup, RedactionIsClosedUnderEncoding) {
                 EXPECT_FALSE(fuzzSecretReadable(error.toString(), secret, 3)) << label << ": " << error.toString();
             });
         EXPECT_EQ(errors, 1) << label;
+        api.take();
+    }
+}
+
+TEST(OfflineWarmup, ADeeplyNestedBodyIsAnErrorOnEveryCall) {
+    // Nested deeper than the strict-JSON scanner's limit: an error with
+    // status 200 on every call, not a crash.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    const std::string deep(200000, '[');
+    for (const auto& [name, call] : everyWarmupCall()) {
+        api.replyWith(200, "application/json", deep);
+        int successes = 0;
+        int errors = 0;
+        call(client, [&](std::string) { ++successes; }, [&](ZBErrorResponse error) {
+            ++errors;
+            EXPECT_EQ(error.statusCode, 200) << name << ": " << error.toString();
+        });
+        EXPECT_EQ(successes, 0) << name;
+        EXPECT_EQ(errors, 1) << name;
         api.take();
     }
 }

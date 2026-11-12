@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <filesystem>
 #include <functional>
@@ -2788,6 +2789,43 @@ TEST(OfflineApi, AnEmptyBodyIsASuccessOnlyForAnInboxPlacementDelete) {
     std::filesystem::remove_all(dir);
 }
 
+/**
+ * The public methods of ZeroBounce that hand the body over as raw JSON
+ * (OnRawJsonSuccessCallback), read from the header so that a new one is
+ * classified without a hand list. Every other non-download call is typed.
+ */
+std::set<std::string> rawJsonMethods() {
+    std::ifstream in(ZB_PUBLIC_HEADER);
+    EXPECT_TRUE(in.good()) << ZB_PUBLIC_HEADER;
+    std::set<std::string> raw;
+    const std::regex method(R"(^\s*(?:\[\[[^\]]*\]\]\s*)?void\s+(\w+)\s*\()");
+    std::string current;
+    for (std::string line; std::getline(in, line);) {
+        std::smatch match;
+        if (std::regex_search(line, match, method)) {
+            current = match[1];
+        }
+        if (!current.empty() && line.find("OnRawJsonSuccessCallback successCallback") != std::string::npos) {
+            raw.insert(current);
+        }
+    }
+    // The filters, the list evaluator result and the Inbox Placement calls.
+    EXPECT_GE(raw.size(), 12u);
+    return raw;
+}
+
+bool isTypedCall(const PublicCall& call, const std::set<std::string>& raw) {
+    return !call.download && raw.count(call.name.substr(0, call.name.find(' '))) == 0;
+}
+
+/// Whether body is the shape a typed call reads: an array for listS3files, an
+/// object for every other.
+bool hasTypedShape(const PublicCall& call, const std::string& body) {
+    const auto first = body.find_first_not_of(" \t\r\n");
+    const char want = call.name == "listS3files" ? '[' : '{';
+    return first != std::string::npos && body[first] == want;
+}
+
 /// One line of the strict-JSON corpus (also defined, identically, in
 /// OfflineWarmupTest.cpp).
 struct StrictJsonCorpusEntry {
@@ -2834,6 +2872,7 @@ TEST(OfflineApi, EveryJsonCallTakesOnlyStrictJson) {
     // reports that, not a JSON error.
     EchoingApi api;
     EchoingClient client(api, "corpus-key");
+    const std::set<std::string> raw = rawJsonMethods();
     const auto dir = freshTempDir("strict-json");
     const std::string path = (dir / "out.csv").string();
     api.status = 200;
@@ -2842,9 +2881,12 @@ TEST(OfflineApi, EveryJsonCallTakesOnlyStrictJson) {
         api.body = entry.body;
         for (const auto& call : everyPublicCall(client)) {
             const std::string label = call.name + " with " + entry.line;
-            const bool blank = entry.body.find_first_not_of(" \t\r\n") == std::string::npos;
-            const bool emptyDelete = blank && call.name == "deleteInboxPlacementTest";
-            const bool success = !call.download && (entry.accept || emptyDelete);
+            // Only a zero-byte body is the documented empty success.
+            const bool emptyDelete = entry.body.empty() && call.name == "deleteInboxPlacementTest";
+            // A typed call reads an object (listS3files an array): valid JSON
+            // of another shape is an error with status 200 (E7).
+            const bool rightShape = !isTypedCall(call, raw) || hasTypedShape(call, entry.body);
+            const bool success = !call.download && ((entry.accept && rightShape) || emptyDelete);
             api.requests = 0;
             int successes = 0;
             int errors = 0;
@@ -2852,6 +2894,9 @@ TEST(OfflineApi, EveryJsonCallTakesOnlyStrictJson) {
             call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
                 if (success && error.errors.size() == 1 &&
                     error.errors.front() == "ZeroBounce returned an unexpected JSON response.") {
+                    // Fields the result needs are missing: still an error with
+                    // the status the body came with.
+                    EXPECT_EQ(error.statusCode, 200) << label << ": " << error.toString();
                     ++schemaErrors;
                     return;
                 }
@@ -3001,6 +3046,170 @@ TEST(OfflineApi, RedactionIsClosedUnderEncoding) {
                 ++errors;
                 const std::string text = error.toString();
                 EXPECT_FALSE(fuzzSecretReadable(text, key, 3)) << label << ": " << text;
+            });
+            EXPECT_EQ(errors, 1) << label;
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, TypedCallsRejectJsonOfTheWrongShape) {
+    // E7: JSON of a shape no typed call reads (a number, a string, true,
+    // null, an array where an object is read, an object where listS3files
+    // reads an array) is an API error with status 200 on every typed call,
+    // never a result filled with defaults. A raw-JSON call hands it over.
+    EchoingApi api;
+    EchoingClient client(api, "shape-key");
+    const std::set<std::string> raw = rawJsonMethods();
+    const auto dir = freshTempDir("wrong-shape");
+    const std::string path = (dir / "out.csv").string();
+    api.status = 200;
+    api.contentType = "application/json";
+    int typed = 0;
+    for (const std::string body : {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] ", "{}"}) {
+        api.body = body;
+        for (const auto& call : everyPublicCall(client)) {
+            if (call.download) {
+                continue;
+            }
+            const bool isTyped = isTypedCall(call, raw);
+            typed += isTyped ? 1 : 0;
+            const bool wrong = isTyped && !hasTypedShape(call, body);
+            const std::string label = call.name + " with " + body;
+            int successes = 0;
+            int errors = 0;
+            call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << label << ": " << error.toString();
+            });
+            if (wrong) {
+                EXPECT_EQ(successes, 0) << label;
+                EXPECT_EQ(errors, 1) << label;
+            } else {
+                EXPECT_EQ(successes + errors, 1) << label;
+            }
+        }
+    }
+    EXPECT_GT(typed, 300);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, ADeeplyNestedBodyIsAnErrorOnEveryCall) {
+    // Nested deeper than the strict-JSON scanner's limit: an error with
+    // status 200 on every call, not a crash.
+    EchoingApi api;
+    EchoingClient client(api, "depth-key");
+    const auto dir = freshTempDir("deep");
+    const std::string path = (dir / "out.csv").string();
+    api.status = 200;
+    api.contentType = "application/json";
+    api.body = std::string(200000, '[');
+    for (const auto& call : everyPublicCall(client)) {
+        int successes = 0;
+        int errors = 0;
+        call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+            ++errors;
+            EXPECT_EQ(error.statusCode, 200) << call.name << ": " << error.toString();
+        });
+        EXPECT_EQ(successes, 0) << call.name;
+        EXPECT_EQ(errors, 1) << call.name;
+    }
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+/// Every byte of in as %XX, lower- or upper-case hex: a spelling the SDK
+/// never generates, so only the decode check sees the secret in it.
+std::string percentEveryByte(const std::string& in, bool lower) {
+    const char* hex = lower ? "0123456789abcdef" : "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : in) {
+        out += '%';
+        out += hex[c >> 4];
+        out += hex[c & 15];
+    }
+    return out;
+}
+
+/// Every byte of an ASCII string as a JSON \u00XX escape.
+std::string unicodeEveryByte(const std::string& in) {
+    std::string out;
+    char buf[8];
+    for (unsigned char c : in) {
+        std::snprintf(buf, sizeof buf, "\\u%04x", c);
+        out += buf;
+    }
+    return out;
+}
+
+/// The error getCredits reports for a 400 text/plain body, with key as the key.
+std::string errorFor(const std::string& key, const std::string& body) {
+    EchoingApi api;
+    EchoingClient client(api, key);
+    api.status = 400;
+    api.contentType = "text/plain";
+    api.body = body;
+    std::string text = "no error";
+    client.getCredits([](ZBCreditsResponse) {}, [&](ZBErrorResponse error) { text = error.toString(); });
+    return text;
+}
+
+}  // namespace
+
+TEST(OfflineApi, EachDecodeStepOfTheRedactionCheckIsNeeded) {
+    // Every spelling below is one the SDK does not generate, and one decode
+    // step (or layer) alone makes the key readable again; removing that step
+    // lets the body through. NUL (%00, \u0000) does not end the search.
+    const std::string key = "fz a\"b/c\\d+e%f&g=h<i>j'k";
+    std::string url4 = key;
+    for (int i = 0; i < 4; ++i) {
+        url4 = fuzzEncode(url4, 0);
+    }
+    const std::vector<std::pair<std::string, std::string>> cases{
+        {"percent, upper-case hex", percentEveryByte(key, false)},
+        {"percent, lower-case hex", percentEveryByte(key, true)},
+        {"after invalid UTF-8", "%ff%fe%c3%28 [" + percentEveryByte(key, true)},
+        {"plus as space", fuzzEncode(fuzzEncode(key, 1), 0)},
+        {"\\u escapes", unicodeEveryByte(key)},
+        {"four URL layers", url4},
+        {"after %00", "bad %00 then " + percentEveryByte(key, false)},
+        {"after \\u0000", "bad \\u0000 then " + unicodeEveryByte(key)},
+    };
+    for (const auto& [what, spelling] : cases) {
+        const std::string text = errorFor(key, "echo [" + spelling + "] end");
+        EXPECT_NE(text.find("omitted because it contained a credential"), std::string::npos) << what << ": " << text;
+    }
+    // A surrogate pair for a character outside the BMP.
+    const std::string surrogate = errorFor("k\xF0\x9F\x94\x91y", "echo [k\\ud83d\\udd11y] end");
+    EXPECT_NE(surrogate.find("omitted because it contained a credential"), std::string::npos) << surrogate;
+    // The control: a NUL and escapes with no key behind them stay.
+    const std::string control = errorFor(key, "nothing secret %00 here \\u0000 %41");
+    EXPECT_EQ(control.find("omitted"), std::string::npos) << control;
+    EXPECT_NE(control.find("%00 here"), std::string::npos) << control;
+}
+
+TEST(OfflineApi, ANulInTheBodyDoesNotEndTheRedactionCheck) {
+    // A %00 before the key, fully percent-encoded, at 400 and on a 200
+    // dead-key answer: every call drops the body.
+    const std::string key = "fz a\"b/c\\d+e%f&g=h<i>j'k";
+    EchoingApi api;
+    EchoingClient client(api, key);
+    const auto dir = freshTempDir("nul-echo");
+    const std::string path = (dir / "out.csv").string();
+    const std::string encoded = percentEveryByte(key, false);
+    for (long status : {400L, 200L}) {
+        api.status = status;
+        api.contentType = status == 200 ? "application/json" : "text/plain";
+        api.body = status == 200 ? R"({"error":"bad %00 then )" + encoded + R"("})" : "bad %00 then " + encoded;
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + " (HTTP " + std::to_string(status) + ")";
+            int errors = 0;
+            call.run(path, [&] { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                const std::string text = error.toString();
+                EXPECT_EQ(error.statusCode, status) << label << ": " << text;
+                EXPECT_FALSE(fuzzSecretReadable(text, key, 4)) << label << ": " << text;
             });
             EXPECT_EQ(errors, 1) << label;
         }

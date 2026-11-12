@@ -259,7 +259,9 @@ bool warmupJson(
     if (!warmupSend(zb, method, url, jsonBody, secrets, result, errorCallback)) {
         return false;
     }
-    if (result.statusCode == 204 || trimmed(result.body).empty()) {
+    // Only a zero-byte body (204, an empty 200) is the documented empty
+    // success; a body of only whitespace is not JSON, so it is an error.
+    if (result.statusCode == 204 || result.body.empty()) {
         if (successCallback) {
             successCallback("null");
         }

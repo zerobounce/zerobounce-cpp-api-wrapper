@@ -278,11 +278,11 @@ void ZeroBounce::validate(
                 cpr::Body{body}
             );
             json parsed;
-            if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
+            if (zbReadTypedJson(reqResponse, outcome, parsed)) {
                 outcome.succeed(ZBValidateResponse::from_json(parsed));
             }
         } catch (const std::exception&) {
-            outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+            outcome.failUnexpectedJson();
         }
         outcome.deliver(successCallback, errorCallback);
         return;
@@ -372,7 +372,7 @@ void ZeroBounce::validateBatch(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed)) {
             ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(parsed);
             for (const auto& item : response.errors) {
                 if (item.emailAddress == "all") {
@@ -388,7 +388,7 @@ void ZeroBounce::validateBatch(
             outcome.succeed(std::move(response));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -535,11 +535,11 @@ void ZeroBounce::scoreEmailPost(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed)) {
             outcome.succeed(ZBScoreEmailResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -562,14 +562,12 @@ void ZeroBounce::sendRequest(
         );
 
         json parsed;
-        bool usable = messageOnlyIsFailure
-            ? zbReadNonMessageJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())
-            : zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink());
+        bool usable = zbReadTypedJson(reqResponse, outcome, parsed, ZbJsonShape::Object, messageOnlyIsFailure);
         if (usable) {
             outcome.succeed(T::from_json(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }
@@ -630,11 +628,11 @@ void ZeroBounce::sendFileInternal(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
+        if (zbReadTypedJson(reqResponse, outcome, parsed)) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
-        outcome.fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response."));
+        outcome.failUnexpectedJson();
     }
     outcome.deliver(successCallback, errorCallback);
 }

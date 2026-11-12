@@ -648,6 +648,10 @@ std::string zbJsonUnescapeView(const std::string& text) {
     return out;
 }
 
+// The SDK's own request encoding plus three layers a server or proxy may add
+// when it echoes the request back.
+constexpr int kZbSecretDecodeLayers = 4;
+
 // Whether secret can be read in text or in any view of it decoded up to
 // layers more times: URL-decoded, form-decoded ('+' as a space too) and
 // JSON-unescaped, in any order.
@@ -681,7 +685,7 @@ std::string zbMaskSecret(std::string text, const std::string& secret) {
     // Redaction is closed under encoding: a spelling the forms above miss
     // (three URL layers, URL of double JSON, ...) still decodes to the
     // secret, and then none of the text is kept.
-    if (zbSecretInDecodedViews(text, secret, 3)) {
+    if (zbSecretInDecodedViews(text, secret, kZbSecretDecodeLayers)) {
         return kZbSecretOmittedMessage;
     }
     return text;
@@ -803,6 +807,26 @@ bool zbReadNonMessageJsonResponse(
     }
     return zbReadNonMessageJsonBody(
         response.status_code, response.text, zbResponseContentType(response), out, errorCallback);
+}
+
+bool zbReadShapedJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    ZbJsonShape shape,
+    bool nonMessage,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
+    const bool read = nonMessage ? zbReadNonMessageJsonResponse(response, apiKey, out, errorCallback)
+                                 : zbReadJsonResponse(response, apiKey, out, errorCallback);
+    if (!read) {
+        return false;
+    }
+    if (shape == ZbJsonShape::Array ? !out.is_array() : !out.is_object()) {
+        zbReportHttpError(response.status_code, response.text, errorCallback);
+        return false;
+    }
+    return true;
 }
 
 bool zbReportFailedDownload(

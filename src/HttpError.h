@@ -85,6 +85,24 @@ bool zbReadJsonResponse(
     const std::function<void(ZBErrorResponse)>& errorCallback
 );
 
+/** The JSON value a typed call reads: an object, or (listS3files) an array. */
+enum class ZbJsonShape { Object, Array };
+
+/**
+ * zbReadJsonResponse (or zbReadNonMessageJsonResponse when nonMessage is set)
+ * for a typed call. Valid JSON of another shape (0, "x", [], true, null) is
+ * not the API's answer either, so it is an error with its HTTP status rather
+ * than a result filled with defaults.
+ */
+bool zbReadShapedJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    ZbJsonShape shape,
+    bool nonMessage,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
 /**
  * zbReadJsonResponse for a call whose result is never a bare message: the email
  * finder and domain search. A body made only of message fields is reported as
@@ -191,6 +209,19 @@ public:
 
     void succeed(T value) { value_ = std::move(value); }
 
+    /** The HTTP status of a response whose body was read as the call's JSON. */
+    void noteStatus(long statusCode) { status_ = statusCode; }
+
+    /**
+     * Records that a body read as JSON did not have the fields the call's
+     * result needs, with the HTTP status it came with (0 if none arrived).
+     */
+    void failUnexpectedJson() {
+        fail(ZBErrorResponse::parseError("ZeroBounce returned an unexpected JSON response.", status_));
+    }
+
+    const std::string& apiKey() const { return apiKey_; }
+
     /** Calls the error callback if an error was recorded, else the success one if a value was. */
     void deliver(
         const std::function<void(T)>& successCallback,
@@ -210,8 +241,29 @@ public:
 
 private:
     std::string apiKey_;
+    long status_ = 0;
     std::optional<T> value_;
     std::optional<ZBErrorResponse> error_;
 };
+
+/**
+ * zbReadShapedJsonResponse for a typed call, with outcome's key and error
+ * sink; notes the status so that a body the result cannot be built from is an
+ * error with that status (ZBOutcome::failUnexpectedJson).
+ */
+template <typename T>
+bool zbReadTypedJson(
+    const cpr::Response& response,
+    ZBOutcome<T>& outcome,
+    json& out,
+    ZbJsonShape shape = ZbJsonShape::Object,
+    bool nonMessage = false
+) {
+    if (!zbReadShapedJsonResponse(response, outcome.apiKey(), out, shape, nonMessage, outcome.errorSink())) {
+        return false;
+    }
+    outcome.noteStatus(response.status_code);
+    return true;
+}
 
 #endif
