@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Every JSON call (`validate`, `getCredits`, `validateBatch`, `sendFile`, the file status and delete calls, the email finder and domain search, the S3 and SFTP file jobs, the filters, the Inbox Placement Tester and the rest) ignored the transport error. A response cut short after its HTTP 200 header (the connection closed before `Content-Length` bytes arrived, or the read timed out part-way) was returned as a result whenever the part that arrived parsed as JSON. They now call the error callback with `The response from ZeroBounce was cut short: <transport error>` and `statusCode` 0, as the downloads do, with the API key masked out of the message. A request that got no response at all now reports `Could not reach ZeroBounce: <transport error>` instead of `Empty response from ZeroBounce (HTTP 0)`; the status is 0 either way. The Warmup client is not affected.
+
 ## [3.0.1] - 2026-11-11
 
 ### Changed

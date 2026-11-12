@@ -66,7 +66,7 @@ void postSendFileForm(
             cpr::Body{body}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
@@ -91,7 +91,7 @@ void sendRawJsonGet(
             cpr::Header{{"Accept", "application/json"}}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {
@@ -128,7 +128,7 @@ void sendRawJsonFormPost(
             cpr::Body{body}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {
@@ -160,7 +160,7 @@ void bulkRootMultipart(
             multipart
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
@@ -594,7 +594,7 @@ void ZeroBounce::listS3files(
             cpr::Header{{"Accept", "application/json"}}
         );
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
             outcome.succeed(ZBS3ListFileEntry::listFromJson(parsed));
         }
     } catch (const std::exception&) {
@@ -801,7 +801,7 @@ void iptRequest(
             );
         }
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {

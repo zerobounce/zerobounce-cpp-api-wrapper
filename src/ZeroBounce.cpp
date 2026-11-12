@@ -278,7 +278,7 @@ void ZeroBounce::validate(
                 cpr::Body{body}
             );
             json parsed;
-            if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+            if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
                 outcome.succeed(ZBValidateResponse::from_json(parsed));
             }
         } catch (const std::exception&) {
@@ -372,7 +372,7 @@ void ZeroBounce::validateBatch(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
             ZBValidateBatchResponse response = ZBValidateBatchResponse::from_json(parsed);
             for (const auto& item : response.errors) {
                 if (item.emailAddress == "all") {
@@ -535,7 +535,7 @@ void ZeroBounce::scoreEmailPost(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
             outcome.succeed(ZBScoreEmailResponse::from_json(parsed));
         }
     } catch (const std::exception&) {
@@ -563,8 +563,8 @@ void ZeroBounce::sendRequest(
 
         json parsed;
         bool usable = messageOnlyIsFailure
-            ? zbReadNonMessageJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())
-            : zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink());
+            ? zbReadNonMessageJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())
+            : zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink());
         if (usable) {
             outcome.succeed(T::from_json(parsed));
         }
@@ -629,7 +629,7 @@ void ZeroBounce::sendFileInternal(
         );
 
         json parsed;
-        if (zbReadJsonResponse(reqResponse.status_code, reqResponse.text, parsed, outcome.errorSink())) {
+        if (zbReadJsonResponse(reqResponse, apiKey, parsed, outcome.errorSink())) {
             outcome.succeed(ZBSendFileResponse::from_json(parsed));
         }
     } catch (const std::exception&) {

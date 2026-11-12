@@ -23,30 +23,6 @@ void zbReportHttpError(
 );
 
 /**
- * On HTTP failure, HTML, an empty body, or a body that is not JSON, reports a short
- * error and returns false. On a JSON body with status < 300, writes it to `out`.
- */
-bool zbReadJsonResponse(
-    long statusCode,
-    const std::string& body,
-    json& out,
-    const std::function<void(ZBErrorResponse)>& errorCallback
-);
-
-/**
- * zbReadJsonResponse for a call whose result is never a bare message: the email
- * finder and domain search. A body made only of message fields is reported as
- * an error. Not for validate, which answers a repeated greylist_processing
- * request with {"Message": "Greylist validation still in progress..."}.
- */
-bool zbReadNonMessageJsonResponse(
-    long statusCode,
-    const std::string& body,
-    json& out,
-    const std::function<void(ZBErrorResponse)>& errorCallback
-);
-
-/**
  * Whether an API key can be sent: true unless it has surrounding whitespace or
  * control characters. Such a key would be quoted, unredacted, in the HTTP
  * library's own error.
@@ -81,6 +57,45 @@ bool zbTransportFailed(const cpr::Response& response);
 
 /** A short message for a response zbTransportFailed accepts. Not redacted. */
 std::string zbTransportErrorMessage(const cpr::Response& response);
+
+/**
+ * Reports a response zbTransportFailed accepts -- no response, or one cut
+ * short, whatever its status -- with status 0 and the API key masked out of
+ * the message, and returns true. Returns false for a complete response.
+ */
+bool zbReportTransportFailure(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * How every JSON call reads its response. A transport failure
+ * (zbReportTransportFailure) is an error before the body is looked at, so the
+ * part of a body that arrived is never taken as a result. Then, on HTTP
+ * failure, HTML, an empty body, a body that is not JSON, "success": false or
+ * an error-only body, reports a short error and returns false. On a JSON body
+ * with status < 300, writes it to `out`.
+ */
+bool zbReadJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * zbReadJsonResponse for a call whose result is never a bare message: the email
+ * finder and domain search. A body made only of message fields is reported as
+ * an error. Not for validate, which answers a repeated greylist_processing
+ * request with {"Message": "Greylist validation still in progress..."}.
+ */
+bool zbReadNonMessageJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
 
 /**
  * For the file downloads: reports a response that is not a complete 2xx -- a

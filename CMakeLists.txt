@@ -98,7 +98,8 @@ target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr nlohmann_json::nlohmann_js
 enable_testing()
 add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp
     test/TransportTest.cpp)
-target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1)
+target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1
+    ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h")
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
 
 # The live API suite is its own executable and is off by default, so a normal
