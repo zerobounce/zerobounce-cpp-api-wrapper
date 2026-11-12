@@ -2172,7 +2172,9 @@ struct PublicCall {
 /**
  * Every public request method of ZeroBounce, overloads included. A name is
  * the method's name, optionally followed by a space and a label for the
- * overload. EveryPublicRequestMethodIsInTheSweep keeps it complete.
+ * overload; a label starting with '#' runs an overload already listed with
+ * other arguments. EveryPublicRequestMethodIsInTheSweep keeps it complete,
+ * overload by overload.
  */
 std::vector<PublicCall> everyPublicCall(ZeroBounce& client) {
     using Err = OnErrorCallback;
@@ -2262,7 +2264,7 @@ std::vector<PublicCall> everyPublicCall(ZeroBounce& client) {
         call("sendEvaluatedFile", object, [&c, any](Ok ok, Err err) { c.sendEvaluatedFile("fid", any(ok), err); }),
         call("addFilter", object, [&c, any](Ok ok, Err err) { c.addFilter("allow", "domain", "example.com", any(ok), err); }),
         call("listFilters", object, [&c, any](Ok ok, Err err) { c.listFilters(false, any(ok), err); }),
-        call("listFilters POST", object, [&c, any](Ok ok, Err err) { c.listFilters(true, any(ok), err); }),
+        call("listFilters #POST", object, [&c, any](Ok ok, Err err) { c.listFilters(true, any(ok), err); }),
         call("deleteFilter", object, [&c, any](Ok ok, Err err) {
             c.deleteFilter("allow", "domain", "example.com", any(ok), err);
         }),
@@ -2337,7 +2339,8 @@ TEST(OfflineApi, EveryPublicRequestMethodIsInTheSweep) {
     ASSERT_NE(begin, std::string::npos);
     const auto end = header.find("\n};", begin);
     ASSERT_NE(end, std::string::npos);
-    std::set<std::string> declared;
+    // Each public request method with its number of overloads.
+    std::map<std::string, int> declared;
     bool isPublic = false;
     std::istringstream lines(header.substr(begin, end - begin));
     const std::regex access(R"(^\s*(public|protected|private):)");
@@ -2350,23 +2353,30 @@ TEST(OfflineApi, EveryPublicRequestMethodIsInTheSweep) {
             const std::string name = match[1];
             // Configuration, not requests.
             if (name != "initialize" && name.rfind("set", 0) != 0) {
-                declared.insert(name);
+                ++declared[name];
             }
         }
     }
     EXPECT_GT(declared.size(), 50u);
     // setInboxPlacementWebhook is a request despite its prefix.
-    declared.insert("setInboxPlacementWebhook");
+    ++declared["setInboxPlacementWebhook"];
+    // The overloads are counted, so the scan has to have found them.
+    EXPECT_EQ(declared["validateBatch"], 2);
+    EXPECT_EQ(declared["findEmailByDomain"], 3);
 
     ZeroBounce client;
-    std::set<std::string> swept;
+    std::map<std::string, int> swept;
     for (const auto& call : everyPublicCall(client)) {
-        swept.insert(call.name.substr(0, call.name.find(' ')));
+        const auto space = call.name.find(' ');
+        const std::string name = call.name.substr(0, space);
+        const bool sameOverload = space != std::string::npos && call.name.compare(space + 1, 1, "#") == 0;
+        swept[name] += sameOverload ? 0 : 1;
     }
-    for (const auto& name : declared) {
-        EXPECT_TRUE(swept.count(name)) << name << " is missing from everyPublicCall";
+    for (const auto& [name, overloads] : declared) {
+        EXPECT_EQ(swept[name], overloads)
+            << name << " has " << overloads << " overloads, everyPublicCall runs " << swept[name];
     }
-    for (const auto& name : swept) {
+    for (const auto& [name, overloads] : swept) {
         EXPECT_TRUE(declared.count(name)) << name << " is not a public method of ZeroBounce";
     }
 }
@@ -2458,5 +2468,127 @@ TEST(OfflineApi, EveryCallTreatsAResponseCutShortAsAnError) {
             EXPECT_FALSE(std::filesystem::exists(path)) << call.name << " (" << label << ") saved a file";
         }
     }
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+/**
+ * Answers every request, PUT and DELETE included, with one scripted response:
+ * a status, a body and its content type.
+ */
+class EchoingApi : public BaseRequestHandler {
+public:
+    long status = 200;
+    std::string body;
+    std::string contentType = "application/json";
+    int requests = 0;
+
+protected:
+    cpr::Response reply() {
+        ++requests;
+        cpr::Response response;
+        response.status_code = status;
+        response.text = body;
+        response.header["Content-Type"] = contentType;
+        return response;
+    }
+    cpr::Response doGet(const cpr::Url&) override { return reply(); }
+    cpr::Response doGet(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Multipart&) override { return reply(); }
+    cpr::Response doPut(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doDelete(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doDelete(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+};
+
+class EchoingClient : public ZeroBounce {
+public:
+    EchoingClient(EchoingApi& api, const std::string& key) {
+        initialize(key);
+        requestHandler = &api;
+    }
+};
+
+}  // namespace
+
+TEST(OfflineApi, NoErrorCarriesTheKey) {
+    // Standard section 3: the key is never in an error. Every call gets each
+    // body below; none of its errors may carry the key, raw or URL-encoded.
+    // The key needs escaping in a URL, so the two forms differ.
+    const std::string key = "leak-K3y/x+y";
+    const std::string escaped = "leak-K3y%2Fx%2By";
+    struct Echo {
+        long status;
+        std::string contentType;
+        std::string body;
+    };
+    const std::vector<Echo> echoes{
+        {200, "application/json", R"({"error":"Invalid API key )" + key + R"("})"},
+        {200, "application/json", R"({"success":false,"message":"Invalid API key )" + key + R"("})"},
+        {400, "text/plain", "Bad Request: GET https://api.zerobounce.net/v2/validate?api_key=" + escaped + "&email=a"},
+        {400, "application/json", R"({"error":"Bad key )" + key + R"("})"},
+        {400, "text/plain", "Rejected key " + escaped},
+    };
+    EchoingApi api;
+    EchoingClient client(api, key);
+    const auto dir = freshTempDir("key-echo");
+    const std::string path = (dir / "out.csv").string();
+    for (const auto& echo : echoes) {
+        api.status = echo.status;
+        api.contentType = echo.contentType;
+        api.body = echo.body;
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + " (" + echo.body + ")";
+            api.requests = 0;
+            int errors = 0;
+            call.run(path, [&] { ADD_FAILURE() << label << ": success"; }, [&](ZBErrorResponse error) {
+                ++errors;
+                const std::string text = error.toString();
+                EXPECT_EQ(error.statusCode, echo.status) << label;
+                EXPECT_EQ(text.find(key), std::string::npos) << label << ": " << text;
+                EXPECT_EQ(text.find(escaped), std::string::npos) << label << ": " << text;
+                // The message is kept with the key masked, not dropped.
+                EXPECT_NE(text.find("***"), std::string::npos) << label << ": " << text;
+            });
+            EXPECT_EQ(api.requests, 1) << label;
+            EXPECT_EQ(errors, 1) << label;
+            EXPECT_FALSE(std::filesystem::exists(path)) << label << " saved a file";
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AnEmptyBodyIsASuccessOnlyForAnInboxPlacementDelete) {
+    // DELETE answers with an empty body, so an empty 2xx there is a success.
+    // From any other call, the other Inbox Placement calls included, it is an
+    // error with its status, and an empty non-2xx is an error everywhere.
+    EchoingApi api;
+    api.body = "";
+    EchoingClient client(api, "empty-body-key");
+    const auto dir = freshTempDir("empty-body");
+    const std::string path = (dir / "out.csv").string();
+    for (long status : {200L, 204L, 404L}) {
+        api.status = status;
+        for (const auto& call : everyPublicCall(client)) {
+            const std::string label = call.name + " (HTTP " + std::to_string(status) + ")";
+            const bool success = status < 300 && call.name == "deleteInboxPlacementTest";
+            int successes = 0;
+            int errors = 0;
+            call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, status) << label << ": " << error.toString();
+            });
+            EXPECT_EQ(successes, success ? 1 : 0) << label;
+            EXPECT_EQ(errors, success ? 0 : 1) << label;
+        }
+    }
+    // The empty result is an empty JSON object.
+    api.status = 200;
+    std::string result = "unset";
+    client.deleteInboxPlacementTest("t1", [&](std::string json) { result = json; },
+        [&](ZBErrorResponse error) { ADD_FAILURE() << error.toString(); });
+    EXPECT_EQ(result, "{}");
     std::filesystem::remove_all(dir);
 }

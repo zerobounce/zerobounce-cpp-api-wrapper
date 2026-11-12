@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <curl/curl.h>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -48,7 +50,7 @@ void postSendFileForm(
     if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<ZBSendFileResponse> outcome;
+    ZBOutcome<ZBSendFileResponse> outcome(zb->getApiKey());
     try {
         std::string body;
         for (size_t i = 0; i < fields.size(); ++i) {
@@ -84,7 +86,7 @@ void sendRawJsonGet(
     if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<std::string> outcome;
+    ZBOutcome<std::string> outcome(zb->getApiKey());
     try {
         cpr::Response reqResponse = zb->getRequestHandler()->Get(
             cpr::Url{url},
@@ -110,7 +112,7 @@ void sendRawJsonFormPost(
     if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<std::string> outcome;
+    ZBOutcome<std::string> outcome(zb->getApiKey());
     try {
         std::string body;
         for (size_t i = 0; i < fields.size(); ++i) {
@@ -148,7 +150,7 @@ void bulkRootMultipart(
     if (!requireApiKey(zb, errorCallback) || !zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<ZBSendFileResponse> outcome;
+    ZBOutcome<ZBSendFileResponse> outcome(zb->getApiKey());
     try {
         cpr::Multipart multipart{{"api_key", zb->getApiKey()}, {"file", cpr::File{filePath}}};
         for (const auto& field : fields) {
@@ -254,7 +256,7 @@ void ZeroBounce::emailFinderGetFile(
     if (!zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<ZBGetFileResponse> outcome;
+    ZBOutcome<ZBGetFileResponse> outcome(apiKey);
     try {
         cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
@@ -338,7 +340,7 @@ void ZeroBounce::domainSearchGetFile(
     if (!zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<ZBGetFileResponse> outcome;
+    ZBOutcome<ZBGetFileResponse> outcome(apiKey);
     try {
         cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
@@ -587,7 +589,7 @@ void ZeroBounce::listS3files(
     if (!zbCheckRequestUrl(url, errorCallback)) {
         return;
     }
-    ZBOutcome<std::vector<ZBS3ListFileEntry>> outcome;
+    ZBOutcome<std::vector<ZBS3ListFileEntry>> outcome(apiKey);
     try {
         cpr::Response reqResponse = getRequestHandler()->Get(
             cpr::Url{url},
@@ -766,7 +768,7 @@ void iptRequest(
     // LIVE: the Inbox Placement Tester authenticates with a Bearer header.
     // Sent as an api_key parameter the request is rejected as unauthorized.
     const std::string bearer = "Bearer " + zb->getApiKey();
-    ZBOutcome<std::string> outcome;
+    ZBOutcome<std::string> outcome(zb->getApiKey());
     try {
         cpr::Response reqResponse;
         if (method == "POST") {
@@ -801,7 +803,14 @@ void iptRequest(
             );
         }
         json parsed;
-        if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
+        const bool emptyBody = std::all_of(reqResponse.text.begin(), reqResponse.text.end(),
+            [](unsigned char c) { return std::isspace(c) != 0; });
+        if (method == "DELETE" && emptyBody && !zbTransportFailed(reqResponse) &&
+            reqResponse.status_code >= 200 && reqResponse.status_code <= 299) {
+            // DELETE answers with an empty body: a success with an empty
+            // result. An empty 2xx from any other call is an error.
+            outcome.succeed("{}");
+        } else if (zbReadJsonResponse(reqResponse, zb->getApiKey(), parsed, outcome.errorSink())) {
             outcome.succeed(parsed.dump());
         }
     } catch (const std::exception&) {

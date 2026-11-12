@@ -128,6 +128,12 @@ bool zbSaveDownload(
 );
 
 /**
+ * A copy of text with the API key, raw and URL-encoded, replaced by ***.
+ * Nothing is replaced for an empty key.
+ */
+std::string zbRedactApiKey(std::string text, const std::string& apiKey);
+
+/**
  * The outcome of one request, handed to the caller's callbacks only after the
  * SDK's own try/catch has finished. That catch is for transport, parse and file
  * errors: an exception thrown by the caller's success or error callback reaches
@@ -137,6 +143,13 @@ bool zbSaveDownload(
 template <typename T>
 class ZBOutcome {
 public:
+    /**
+     * apiKey is the key the request was sent with. Every error deliver hands
+     * over has it taken out, whatever built the message: a body quoting the
+     * key or the request URL, a transport error or an exception.
+     */
+    explicit ZBOutcome(std::string apiKey) : apiKey_(std::move(apiKey)) {}
+
     /** An error callback for the SDK's helpers that records the error instead. */
     std::function<void(ZBErrorResponse)> errorSink() {
         return [this](ZBErrorResponse error) { fail(std::move(error)); };
@@ -158,6 +171,9 @@ public:
     ) {
         if (error_) {
             if (errorCallback) {
+                for (auto& message : error_->errors) {
+                    message = zbRedactApiKey(std::move(message), apiKey_);
+                }
                 errorCallback(std::move(*error_));
             }
         } else if (value_ && successCallback) {
@@ -166,6 +182,7 @@ public:
     }
 
 private:
+    std::string apiKey_;
     std::optional<T> value_;
     std::optional<ZBErrorResponse> error_;
 };
