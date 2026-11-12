@@ -262,24 +262,49 @@ static bool zbReadNonMessageJsonBody(
     return true;
 }
 
-std::string zbRedactApiKey(std::string text, const std::string& apiKey) {
-    if (apiKey.empty()) {
-        return text;
+std::vector<std::string> zbSecretForms(const std::string& secret) {
+    std::vector<std::string> forms;
+    if (secret.empty()) {
+        return forms;
     }
-    std::vector<std::string> forms{apiKey};
-    char* escaped = curl_easy_escape(nullptr, apiKey.c_str(), static_cast<int>(apiKey.size()));
-    if (escaped) {
-        if (apiKey != escaped) {
-            forms.emplace_back(escaped);
+    auto add = [&forms](std::string form) {
+        if (std::find(forms.begin(), forms.end(), form) == forms.end()) {
+            forms.push_back(std::move(form));
         }
+    };
+    // A body may echo a request body (JSON-escaped, '/' escaped or not) or a
+    // request URL (URL-encoded). The escaped forms go first: they can contain
+    // the raw one.
+    for (bool escapeSlash : {true, false}) {
+        std::string json;
+        for (char c : secret) {
+            if (c == '"' || c == '\\' || (escapeSlash && c == '/')) {
+                json += '\\';
+            }
+            json += c;
+        }
+        add(json);
+    }
+    char* escaped = curl_easy_escape(nullptr, secret.c_str(), static_cast<int>(secret.size()));
+    if (escaped) {
+        add(escaped);
         curl_free(escaped);
     }
-    for (const auto& form : forms) {
+    add(secret);
+    return forms;
+}
+
+std::string zbMaskSecret(std::string text, const std::string& secret) {
+    for (const auto& form : zbSecretForms(secret)) {
         for (size_t at = 0; (at = text.find(form, at)) != std::string::npos; at += 3) {
             text.replace(at, form.size(), "***");
         }
     }
     return text;
+}
+
+std::string zbRedactApiKey(std::string text, const std::string& apiKey) {
+    return zbMaskSecret(std::move(text), apiKey);
 }
 
 const char* const kZbDirtyApiKeyMessage = "api_key has surrounding whitespace or control characters";

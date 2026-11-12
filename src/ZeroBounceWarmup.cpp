@@ -110,20 +110,11 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
 
 namespace {
 
-/** Replace every form of a secret in a message with ***. */
+/** Replace every form of a secret (raw, URL-encoded, JSON-escaped) in a message with ***. */
 std::string redact(const std::string& text, const std::vector<std::string>& secrets) {
     std::string value = text;
     for (const auto& secret : secrets) {
-        if (secret.empty()) {
-            continue;
-        }
-        for (const auto& form : {secret, urlEncode(secret)}) {
-            size_t at = 0;
-            while ((at = value.find(form, at)) != std::string::npos) {
-                value.replace(at, form.size(), "***");
-                at += 3;
-            }
-        }
+        value = zbMaskSecret(std::move(value), secret);
     }
     return value;
 }

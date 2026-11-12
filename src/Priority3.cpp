@@ -264,7 +264,7 @@ void ZeroBounce::emailFinderGetFile(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
+        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
                 || zbDownloadBodyIsJson(rsp, contentType)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
@@ -348,7 +348,7 @@ void ZeroBounce::domainSearchGetFile(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
+        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
                 || zbDownloadBodyIsJson(rsp, contentType)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {

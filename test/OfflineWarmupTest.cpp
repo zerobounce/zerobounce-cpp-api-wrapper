@@ -2,6 +2,7 @@
 // every request and answers without the network.
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -867,10 +868,42 @@ TEST(OfflineWarmup, CsvDownloadsRejectEveryNonFileAnswer) {
 
 namespace {
 
-const std::string kLeakKey = "leak-W4rm/x+y";
-const std::string kLeakKeyEscaped = "leak-W4rm%2Fx%2By";
-const std::string kSmtpUser = "smtp-user-42";
-const std::string kSmtpPassword = "smtp-pass-77";
+// Each secret needs escaping in a URL and in JSON, so its raw, URL-encoded and
+// JSON-escaped forms ('/' escaped or not) all differ.
+const std::string kLeakKey = R"(leak-W4rm/x+y"q%z)";
+const std::string kSmtpUser = R"(us"er/n+%)";
+const std::string kSmtpPassword = R"(Pa/ss"w%rd+)";
+
+std::string jsonEscaped(const std::string& secret, bool escapeSlash) {
+    std::string out;
+    for (char c : secret) {
+        if (c == '"' || c == '\\' || (escapeSlash && c == '/')) {
+            out += '\\';
+        }
+        out += c;
+    }
+    return out;
+}
+
+std::string urlEscaped(const std::string& secret) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : secret) {
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+/// The forms an echo can quote a secret in.
+std::vector<std::string> secretForms(const std::string& secret) {
+    return {secret, urlEscaped(secret), jsonEscaped(secret, true), jsonEscaped(secret, false)};
+}
 
 using WarmupCall = std::function<void(ZeroBounceWarmup&, OnRawJsonSuccessCallback, OnErrorCallback)>;
 
@@ -950,20 +983,28 @@ TEST(OfflineWarmup, NoErrorOnAnyCallCarriesTheKeyOrTheSmtpCredentials) {
     // key raw and URL-encoded, and the SMTP credentials. A 200 JSON body is a
     // result for the JSON calls but an error for the CSV downloads; a 200
     // that is not JSON is an error for the JSON calls.
-    const std::string quoted = kLeakKey + " " + kLeakKeyEscaped + " " + kSmtpUser + " " + kSmtpPassword;
+    // JSON bodies quote the escaped forms (a JSON parser turns them back into
+    // the raw one); text bodies quote every form as it is.
+    std::string quotedJson;
+    std::string quoted;
+    for (const auto& secret : {kLeakKey, kSmtpUser, kSmtpPassword}) {
+        const auto forms = secretForms(secret);
+        quotedJson += forms[1] + " " + forms[2] + " " + forms[3] + " ";
+        quoted += forms[0] + " " + forms[1] + " " + forms[2] + " " + forms[3] + " ";
+    }
     struct Answer {
         long status;
         std::string type;
         std::string body;
     };
     const std::vector<Answer> answers{
-        {200, "application/json", R"({"error":"Invalid API key )" + quoted + R"("})"},
-        {200, "application/json", R"({"success":false,"message":"Bad key )" + quoted + R"("})"},
-        {200, "application/json", R"({"message":"Invalid API-Key )" + quoted + R"("})"},
-        {200, "application/json", R"({"detail":"Invalid API-Key )" + quoted + R"("})"},
+        {200, "application/json", R"({"error":"Invalid API key )" + quotedJson + R"("})"},
+        {200, "application/json", R"({"success":false,"message":"Bad key )" + quotedJson + R"("})"},
+        {200, "application/json", R"({"message":"Invalid API-Key )" + quotedJson + R"("})"},
+        {200, "application/json", R"({"detail":"Invalid API-Key )" + quotedJson + R"("})"},
         {200, "text/plain", "Invalid API-Key " + quoted},
         {400, "text/plain", "Bad Request: GET https://warmup-api.zerobounce.net/api/v1/warmup/seeds?key=" + quoted},
-        {400, "application/json", R"({"error":"Bad key )" + quoted + R"("})"},
+        {400, "application/json", R"({"error":"Bad key )" + quotedJson + R"("})"},
     };
     FakeWarmupApi api;
     OfflineWarmupClient client(api, kLeakKey);
@@ -979,12 +1020,14 @@ TEST(OfflineWarmup, NoErrorOnAnyCallCarriesTheKeyOrTheSmtpCredentials) {
                 failed = true;
                 const std::string message = error.toString();
                 EXPECT_EQ(error.statusCode, answer.status) << label;
-                for (const auto& secret : {kLeakKey, kLeakKeyEscaped}) {
-                    EXPECT_EQ(message.find(secret), std::string::npos) << label << ": " << message;
+                for (const auto& form : secretForms(kLeakKey)) {
+                    EXPECT_EQ(message.find(form), std::string::npos) << label << ": " << message;
                 }
                 if (name == "testSmtpConfiguration") {
                     for (const auto& secret : {kSmtpUser, kSmtpPassword}) {
-                        EXPECT_EQ(message.find(secret), std::string::npos) << label << ": " << message;
+                        for (const auto& form : secretForms(secret)) {
+                            EXPECT_EQ(message.find(form), std::string::npos) << label << ": " << message;
+                        }
                     }
                 }
             });

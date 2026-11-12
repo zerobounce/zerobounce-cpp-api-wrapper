@@ -2053,6 +2053,62 @@ TEST(OfflineApi, AJsonObjectInPlaceOfAFileIsAnErrorWhateverItsKeysOrContentType)
     std::filesystem::remove_all(dir);
 }
 
+TEST(OfflineApi, AnEmptyBodyInPlaceOfAFileIsAnError) {
+    // An empty 200 is not an empty file: every download reports it as an
+    // error with the status and writes nothing, whatever the content type.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    const auto dir = freshTempDir("empty-download");
+    api.body = "";
+    for (const char* type : {"text/csv", "application/octet-stream", ""}) {
+        api.contentType = type;
+        int errors = 0;
+        auto onError = [&](ZBErrorResponse error) {
+            ++errors;
+            EXPECT_EQ(error.statusCode, 200) << type;
+        };
+        auto saved = [&](ZBGetFileResponse) { ADD_FAILURE() << "empty body under " << type << " was saved"; };
+        const std::string path = (dir / "out.csv").string();
+        client.getFile("fid", path, saved, onError);
+        client.scoringGetFile("fid", path, saved, onError);
+        client.emailFinderGetFile("fid", path, saved, onError);
+        client.domainSearchGetFile("fid", path, saved, onError);
+        EXPECT_EQ(errors, 4) << type;
+        EXPECT_FALSE(std::filesystem::exists(path)) << type;
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, SendFileSendsRemoveDuplicateOnlyWhenSet) {
+    // The API defaults remove_duplicate to true; the SDK sends it only when
+    // the caller chose a value.
+    for (bool scoring : {false, true}) {
+        FakeApi api;
+        OfflineClient client(api, "file-key");
+        auto send = [&](const SendFileOptions& options) {
+            auto ok = [](ZBSendFileResponse) {};
+            auto err = [](ZBErrorResponse error) { FAIL() << error.toString(); };
+            if (scoring) {
+                client.scoringSendFile(kCsv, 1, options, ok, err);
+            } else {
+                client.sendFile(kCsv, 1, options, ok, err);
+            }
+            auto request = onlyRequest(api);
+            api.clear();
+            return request;
+        };
+        SendFileOptions options;
+        auto request = send(options);
+        EXPECT_EQ(request.fields.count("remove_duplicate"), 0u) << scoring;
+        EXPECT_EQ(request.fields["has_header_row"], "true") << scoring;
+        for (bool value : {false, true}) {
+            options.removeDuplicate = value;
+            request = send(options);
+            EXPECT_EQ(request.fields["remove_duplicate"], value ? "true" : "false") << scoring;
+        }
+    }
+}
+
 #ifndef _WIN32
 
 TEST(OfflineApi, AShortWriteIsAnErrorAndLeavesNoPartialFile) {
@@ -2515,21 +2571,25 @@ public:
 
 TEST(OfflineApi, NoErrorCarriesTheKey) {
     // Standard section 3: the key is never in an error. Every call gets each
-    // body below; none of its errors may carry the key, raw or URL-encoded.
-    // The key needs escaping in a URL, so the two forms differ.
-    const std::string key = "leak-K3y/x+y";
-    const std::string escaped = "leak-K3y%2Fx%2By";
+    // body below; none of its errors may carry the key, raw, URL-encoded or
+    // JSON-escaped ('/' escaped or not). The key needs escaping in a URL and
+    // in JSON, so every form differs.
+    const std::string key = R"(leak-K3y/x+y"q%z)";
+    const std::string escaped = "leak-K3y%2Fx%2By%22q%25z";
+    const std::string json = R"(leak-K3y\/x+y\"q%z)";
+    const std::string jsonPlain = R"(leak-K3y/x+y\"q%z)";
     struct Echo {
         long status;
         std::string contentType;
         std::string body;
     };
     const std::vector<Echo> echoes{
-        {200, "application/json", R"({"error":"Invalid API key )" + key + R"("})"},
-        {200, "application/json", R"({"success":false,"message":"Invalid API key )" + key + R"("})"},
+        {200, "application/json", R"({"error":"Invalid API key )" + json + R"("})"},
+        {200, "application/json", R"({"success":false,"message":"Invalid API key )" + jsonPlain + R"("})"},
         {400, "text/plain", "Bad Request: GET https://api.zerobounce.net/v2/validate?api_key=" + escaped + "&email=a"},
-        {400, "application/json", R"({"error":"Bad key )" + key + R"("})"},
+        {400, "application/json", R"({"error":"Bad key )" + json + R"("})"},
         {400, "text/plain", "Rejected key " + escaped},
+        {400, "text/plain", R"(Bad Request: {"api_key":")" + json + R"(","k":")" + jsonPlain + R"("} raw )" + key},
     };
     EchoingApi api;
     EchoingClient client(api, key);
@@ -2547,8 +2607,9 @@ TEST(OfflineApi, NoErrorCarriesTheKey) {
                 ++errors;
                 const std::string text = error.toString();
                 EXPECT_EQ(error.statusCode, echo.status) << label;
-                EXPECT_EQ(text.find(key), std::string::npos) << label << ": " << text;
-                EXPECT_EQ(text.find(escaped), std::string::npos) << label << ": " << text;
+                for (const auto& form : {key, escaped, json, jsonPlain}) {
+                    EXPECT_EQ(text.find(form), std::string::npos) << label << ": " << text;
+                }
                 // The message is kept with the key masked, not dropped.
                 EXPECT_NE(text.find("***"), std::string::npos) << label << ": " << text;
             });

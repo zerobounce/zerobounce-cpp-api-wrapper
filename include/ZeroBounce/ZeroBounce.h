@@ -43,7 +43,11 @@ struct SendFileOptions {
     int genderColumn = 0;
     int ipAddressColumn = 0;
     bool hasHeaderRow = true;
-    bool removeDuplicate = true;
+    /**
+     * Sent only when set; unset, the API's default (true) applies. Assigning
+     * true or false works as before.
+     */
+    std::optional<bool> removeDuplicate;
     /** When set, sent as allow_phase_2 on validation sendFile only (not scoringSendFile). */
     bool allowPhase2IsSet = false;
     bool allowPhase2 = false;

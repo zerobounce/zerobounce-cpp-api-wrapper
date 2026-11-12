@@ -616,7 +616,10 @@ void ZeroBounce::sendFileInternal(
         }
 
         multipart.parts.emplace_back(cpr::Part{"has_header_row", std::string(options.hasHeaderRow ? "true" : "false")});
-        multipart.parts.emplace_back(cpr::Part{"remove_duplicate", std::string(options.removeDuplicate ? "true" : "false")});
+        // Only when the caller set it: the API defaults it to true.
+        if (options.removeDuplicate.has_value()) {
+            multipart.parts.emplace_back(cpr::Part{"remove_duplicate", std::string(*options.removeDuplicate ? "true" : "false")});
+        }
 
         if (!scoring && options.allowPhase2IsSet) {
             multipart.parts.emplace_back(cpr::Part{"allow_phase_2", std::string(options.allowPhase2 ? "true" : "false")});
@@ -690,7 +693,7 @@ void ZeroBounce::getFileInternal(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // No file is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
+        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
             zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
         } else if (zbDownloadBodyIsJson(rsp, contentType)) {
             // A JSON body, whatever its keys or content type, is the API

@@ -506,33 +506,69 @@ TEST(Transport, TheBaseHandlersPutAndDeleteDoNotFollowRedirects) {
     EXPECT_EQ(server.paths().size(), methods.size());
 }
 
-TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
-    // A TLS handshake the server never answers, held for longer than the
-    // default connect timeout (30 s) and shorter than the total one (120 s):
-    // only the connect timeout ends it in time. The three calls run at once,
-    // so the test takes about 30 s.
-    constexpr int kHoldMs = BaseRequestHandler::DefaultConnectTimeoutMs + 15000;
-    LocalServer server(LocalServer::Mode::Stall, kHoldMs);
-    BaseDefaultsHandler handler;
-    const auto methods = everyBaseDefaultMethod();
-    ASSERT_EQ(methods.size(), 3u);
-    std::vector<cpr::Response> responses(methods.size());
-    std::vector<std::chrono::steady_clock::duration> elapsed(methods.size());
+namespace {
+
+/** The handler ZeroBounce's public constructor builds, as every caller gets it. */
+class DefaultHandlerClient : public ZeroBounce {
+public:
+    BaseRequestHandler& handler() { return *defaultRequestHandler; }
+};
+
+/**
+ * Every request method of the public client's own handler and the
+ * BaseRequestHandler defaults, sent at once to url, each with how long it
+ * took. Nothing here sets a timeout: only the defaults can end a stall.
+ */
+struct TimedCall {
+    std::string name;
+    cpr::Response response;
+    std::chrono::steady_clock::duration elapsed{};
+};
+
+std::vector<TimedCall> callEveryDefaultHandlerAtOnce(const std::function<std::string()>& url) {
+    DefaultHandlerClient client;
+    BaseDefaultsHandler base;
+    std::vector<std::pair<std::string, std::function<cpr::Response()>>> calls;
+    for (const auto& method : everyHandlerMethod()) {
+        calls.emplace_back("ZeroBounce() handler " + method.first,
+                           [&client, method, url] { return method.second(client.handler(), url()); });
+    }
+    for (const auto& method : everyBaseDefaultMethod()) {
+        calls.emplace_back("BaseRequestHandler " + method.first,
+                           [&base, method, url] { return method.second(base, url()); });
+    }
+    std::vector<TimedCall> results(calls.size());
     std::vector<std::thread> threads;
-    for (size_t i = 0; i < methods.size(); ++i) {
+    for (size_t i = 0; i < calls.size(); ++i) {
         threads.emplace_back([&, i] {
             auto started = std::chrono::steady_clock::now();
-            responses[i] = methods[i].second(handler, server.url("https", "/stall"));
-            elapsed[i] = std::chrono::steady_clock::now() - started;
+            results[i].name = calls[i].first;
+            results[i].response = calls[i].second();
+            results[i].elapsed = std::chrono::steady_clock::now() - started;
         });
     }
     for (auto& thread : threads) {
         thread.join();
     }
-    for (size_t i = 0; i < methods.size(); ++i) {
-        EXPECT_EQ(responses[i].status_code, 0) << methods[i].first;
-        EXPECT_EQ(responses[i].error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << methods[i].first;
-        EXPECT_LT(elapsed[i], std::chrono::milliseconds(kHoldMs - 5000)) << methods[i].first;
+    return results;
+}
+
+}  // namespace
+
+TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
+    // A TLS handshake the server never answers, held for longer than the
+    // default connect timeout (30 s) and shorter than the total one (120 s):
+    // only the connect timeout ends it in time. Every method of the handler
+    // the public ZeroBounce constructor builds, and the BaseRequestHandler
+    // PUT and DELETE defaults, run at once, so the test takes about 30 s.
+    constexpr int kHoldMs = BaseRequestHandler::DefaultConnectTimeoutMs + 15000;
+    LocalServer server(LocalServer::Mode::Stall, kHoldMs);
+    const auto results = callEveryDefaultHandlerAtOnce([&] { return server.url("https", "/stall"); });
+    ASSERT_EQ(results.size(), everyHandlerMethod().size() + 3u);
+    for (const auto& result : results) {
+        EXPECT_EQ(result.response.status_code, 0) << result.name;
+        EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;
+        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 5000)) << result.name;
     }
 }
 
@@ -540,29 +576,16 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultTotalTimeout) {
     // Plain http: the connection is made at once, then the server never
     // answers and holds it for longer than the default total timeout (120 s).
     // Without cpr::Timeout the calls would wait for the server to give up.
-    // The three calls run at once, so the test takes about 120 s.
+    // Every method of the public client's handler and the BaseRequestHandler
+    // defaults run at once, so the test takes about 120 s.
     constexpr int kHoldMs = BaseRequestHandler::DefaultTimeoutMs + 15000;
     LocalServer server(LocalServer::Mode::Stall, kHoldMs);
-    BaseDefaultsHandler handler;
-    const auto methods = everyBaseDefaultMethod();
-    ASSERT_EQ(methods.size(), 3u);
-    std::vector<cpr::Response> responses(methods.size());
-    std::vector<std::chrono::steady_clock::duration> elapsed(methods.size());
-    std::vector<std::thread> threads;
-    for (size_t i = 0; i < methods.size(); ++i) {
-        threads.emplace_back([&, i] {
-            auto started = std::chrono::steady_clock::now();
-            responses[i] = methods[i].second(handler, server.url("http", "/stall"));
-            elapsed[i] = std::chrono::steady_clock::now() - started;
-        });
-    }
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    for (size_t i = 0; i < methods.size(); ++i) {
-        EXPECT_EQ(responses[i].status_code, 0) << methods[i].first;
-        EXPECT_EQ(responses[i].error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << methods[i].first;
-        EXPECT_LT(elapsed[i], std::chrono::milliseconds(kHoldMs - 5000)) << methods[i].first;
+    const auto results = callEveryDefaultHandlerAtOnce([&] { return server.url("http", "/stall"); });
+    ASSERT_EQ(results.size(), everyHandlerMethod().size() + 3u);
+    for (const auto& result : results) {
+        EXPECT_EQ(result.response.status_code, 0) << result.name;
+        EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;
+        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 5000)) << result.name;
     }
 }
 

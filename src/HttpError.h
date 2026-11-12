@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <cpr/cpr.h>
 #include <nlohmann/json.hpp>
@@ -128,8 +129,17 @@ bool zbSaveDownload(
 );
 
 /**
- * A copy of text with the API key, raw and URL-encoded, replaced by ***.
- * Nothing is replaced for an empty key.
+ * The forms a secret can be echoed in: JSON-escaped ('/' escaped and not),
+ * URL-encoded and raw, without repeats. Empty for an empty secret.
+ */
+std::vector<std::string> zbSecretForms(const std::string& secret);
+
+/** A copy of text with every form of secret (zbSecretForms) replaced by ***. */
+std::string zbMaskSecret(std::string text, const std::string& secret);
+
+/**
+ * A copy of text with the API key, raw, URL-encoded and JSON-escaped,
+ * replaced by ***. Nothing is replaced for an empty key.
  */
 std::string zbRedactApiKey(std::string text, const std::string& apiKey);
 
