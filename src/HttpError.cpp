@@ -6,6 +6,9 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <vector>
+
+#include <curl/curl.h>
 
 namespace {
 
@@ -257,6 +260,26 @@ static bool zbReadNonMessageJsonBody(
         return false;
     }
     return true;
+}
+
+std::string zbRedactApiKey(std::string text, const std::string& apiKey) {
+    if (apiKey.empty()) {
+        return text;
+    }
+    std::vector<std::string> forms{apiKey};
+    char* escaped = curl_easy_escape(nullptr, apiKey.c_str(), static_cast<int>(apiKey.size()));
+    if (escaped) {
+        if (apiKey != escaped) {
+            forms.emplace_back(escaped);
+        }
+        curl_free(escaped);
+    }
+    for (const auto& form : forms) {
+        for (size_t at = 0; (at = text.find(form, at)) != std::string::npos; at += 3) {
+            text.replace(at, form.size(), "***");
+        }
+    }
+    return text;
 }
 
 const char* const kZbDirtyApiKeyMessage = "api_key has surrounding whitespace or control characters";

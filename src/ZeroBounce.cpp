@@ -267,7 +267,7 @@ void ZeroBounce::validate(
             body += "&callback_url=" + urlEncode(options.callbackUrl.value());
         }
         if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
-        ZBOutcome<ZBValidateResponse> outcome;
+        ZBOutcome<ZBValidateResponse> outcome(apiKey);
         try {
             cpr::Response reqResponse = requestHandler->Post(
                 cpr::Url{apiBaseUrl + "/validate"},
@@ -331,7 +331,7 @@ void ZeroBounce::validateBatch(
     if (!checkValidateBatchTimeout(options.timeout, errorCallback)) return;
     if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
 
-    ZBOutcome<ZBValidateBatchResponse> outcome;
+    ZBOutcome<ZBValidateBatchResponse> outcome(apiKey);
     try {
         json payload;
         payload["api_key"] = apiKey;
@@ -520,7 +520,7 @@ void ZeroBounce::scoreEmailPost(
 
     if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
 
-    ZBOutcome<ZBScoreEmailResponse> outcome;
+    ZBOutcome<ZBScoreEmailResponse> outcome(apiKey);
     try {
         std::string body =
             "api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email);
@@ -554,7 +554,7 @@ void ZeroBounce::sendRequest(
     if (invalidApiKey(errorCallback)) return;
     if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
 
-    ZBOutcome<T> outcome;
+    ZBOutcome<T> outcome(apiKey);
     try {
         cpr::Response reqResponse = requestHandler->Get(
             cpr::Url{urlPath},
@@ -587,7 +587,7 @@ void ZeroBounce::sendFileInternal(
     std::string urlPath = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/sendfile";
     if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
 
-    ZBOutcome<ZBSendFileResponse> outcome;
+    ZBOutcome<ZBSendFileResponse> outcome(apiKey);
     try {
 
         cpr::Multipart multipart{
@@ -670,7 +670,7 @@ void ZeroBounce::getFileInternal(
     const std::string base = (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/getfile";
     if (!zbCheckRequestUrl(base, errorCallback)) return;
 
-    ZBOutcome<ZBGetFileResponse> outcome;
+    ZBOutcome<ZBGetFileResponse> outcome(apiKey);
     try {
         cpr::Parameters params;
         params.Add({{"api_key", apiKey}, {"file_id", fileId}});

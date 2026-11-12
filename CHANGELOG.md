@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Every JSON call (`validate`, `getCredits`, `validateBatch`, `sendFile`, the file status and delete calls, the email finder and domain search, the S3 and SFTP file jobs, the filters, the Inbox Placement Tester and the rest) ignored the transport error. A response cut short after its HTTP 200 header (the connection closed before `Content-Length` bytes arrived, or the read timed out part-way) was returned as a result whenever the part that arrived parsed as JSON. They now call the error callback with `The response from ZeroBounce was cut short: <transport error>` and `statusCode` 0, as the downloads do, with the API key masked out of the message. A request that got no response at all now reports `Could not reach ZeroBounce: <transport error>` instead of `Empty response from ZeroBounce (HTTP 0)`; the status is 0 either way. The Warmup client is not affected.
+- **Behaviour change:** `deleteInboxPlacementTest` reported an empty 2xx body, the API's answer to a successful delete, as an error (`Empty response from ZeroBounce (HTTP 200)`). It now calls the success callback with `"{}"`, as the C SDK does. An empty 2xx from any other call, the other Inbox Placement calls included, and an empty non-2xx from any call stay errors with their status.
+
+### Security
+
+- An error built from a response body could carry the API key: the main `ZeroBounce` client masked the key only in transport errors, so `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting the key, or a body quoting the request URL with `api_key=<key>` (URL-encoded) reached the error callback whole, on every call. Every error the client delivers now has the key, raw and URL-encoded, replaced by `***`. `ZeroBounceWarmup` already did this.
 
 ## [3.0.1] - 2026-11-11
 
