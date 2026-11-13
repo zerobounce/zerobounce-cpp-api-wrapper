@@ -55,25 +55,32 @@ std::string ZBValidateBatchResponse::toString()
 ZBValidateBatchResponse ZBValidateBatchResponse::from_json(const json& j) {
     ZBValidateBatchResponse r;
 
-    // Both lists are arrays (or null) of objects.
-    for (const char* list : {"email_batch", "errors"}) {
-        const json& value = j.at(list);
-        if (!value.is_null() && !value.is_array()) {
+    if (!j.is_object()) {
+        throw ZBJsonFieldTypeError("email_batch");
+    }
+    // Both lists are arrays of objects. A null or missing list is empty
+    // (standard section 3), as in the C and Python SDKs.
+    const json noList = json::array();
+    const json& emailBatch = j.contains("email_batch") ? j.at("email_batch") : noList;
+    const json& errors = j.contains("errors") ? j.at("errors") : noList;
+    for (const auto& [list, value] : {std::pair<const char*, const json*>{"email_batch", &emailBatch},
+                                      std::pair<const char*, const json*>{"errors", &errors}}) {
+        if (!value->is_null() && !value->is_array()) {
             throw ZBJsonFieldTypeError(list);
         }
-        for (const auto& item : value) {
+        for (const auto& item : *value) {
             if (!item.is_object()) {
                 throw ZBJsonFieldTypeError(list);
             }
         }
     }
 
-    for (auto& emailObj : j.at("email_batch")) {
+    for (auto& emailObj : emailBatch) {
         ZBValidateResponse emailResponse = ZBValidateResponse::from_json(emailObj);
         r.emailBatch.push_back(emailResponse);
     }
 
-    for (auto& errorObj : j.at("errors")) {
+    for (auto& errorObj : errors) {
         ZBValidateError error = ZBValidateError::from_json(errorObj);
         r.errors.push_back(error);
     }

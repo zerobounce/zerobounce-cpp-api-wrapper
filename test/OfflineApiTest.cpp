@@ -3298,6 +3298,8 @@ TEST(OfflineApi, TypedCallsRejectFieldsOfTheWrongType) {
              // A JSON integer is an answer only when it is a whole number in
              // the range of int: no fraction or exponent, nothing past INT_MAX.
              R"({"Credits":5.0})", R"({"Credits":1e3})", R"({"Credits":2147483648})",
+             // A string Credits is an int too: one past either end is an error.
+             R"({"Credits":"2147483648"})", R"({"Credits":"-2147483649"})",
              R"({"Credits":-2147483649})", R"({"Credits":9223372036854775808})",
              R"({"Credits":99999999999999999999})"}) {
         EXPECT_EQ(outcomeOf(callNamed(calls, "getCredits"), api, body, path), -1) << body;
@@ -3393,6 +3395,74 @@ TEST(OfflineApi, EveryFieldAModelReadsIsTypeChecked) {
     std::filesystem::remove_all(dir);
 }
 
+// return_url is sent only when the caller sets one: the default (empty) is left
+// out of both sendfile calls.
+TEST(OfflineApi, ReturnUrlIsSentOnlyWhenSet) {
+    for (bool scoring : {false, true}) {
+        FakeApi api;
+        OfflineClient client(api, "return-key");
+        auto send = [&](const SendFileOptions& options) {
+            auto ok = [](ZBSendFileResponse) {};
+            auto err = [](ZBErrorResponse error) { FAIL() << error.toString(); };
+            if (scoring) {
+                client.scoringSendFile(kCsv, 1, options, ok, err);
+            } else {
+                client.sendFile(kCsv, 1, options, ok, err);
+            }
+            auto request = onlyRequest(api);
+            api.clear();
+            return request;
+        };
+        SendFileOptions options;
+        EXPECT_EQ(send(options).fields.count("return_url"), 0u) << scoring;
+        options.returnUrl = "https://example.com/hook";
+        EXPECT_EQ(send(options).fields["return_url"], "https://example.com/hook") << scoring;
+    }
+}
+
+// standard section 3: "success" as the string "false", in any letter case, is a
+// failure with status 200 on every JSON path. No message is sent, so nothing
+// else in the body reports the failure.
+TEST(OfflineApi, SuccessStringFalseIsAnErrorOnEveryJsonCall) {
+    EchoingApi api;
+    EchoingClient client(api, "success-string");
+    const auto dir = freshTempDir("success-string");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    for (const std::string body : {R"({"success":"false"})", R"({"success":"False"})", R"({"success":"FALSE"})"}) {
+        for (const char* name : {"fileStatus", "scoringFileStatus", "deleteFile", "sendFile", "addFilter",
+                                 "listFilters", "deleteFilter"}) {
+            EXPECT_EQ(outcomeOf(callNamed(calls, name), api, body, path), -1) << name << " with " << body;
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// standard section 3: a null or missing optional list reads as empty, never an
+// error (the batch lists, other_domain_formats), and a null file_id or message
+// is the empty value.
+TEST(OfflineApi, NullOrMissingOptionalFieldsReadAsEmpty) {
+    EchoingApi api;
+    EchoingClient client(api, "null-fields");
+    const auto dir = freshTempDir("null-fields");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    const std::vector<std::pair<std::string, std::string>> bodies{
+        {"validateBatch", R"({"email_batch":null,"errors":null})"},
+        {"validateBatch", R"({"errors":[]})"},
+        {"validateBatch", R"({"email_batch":[]})"},
+        {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"first.last",)"
+                                 R"("confidence":"high","did_you_mean":"","failure_reason":"","other_domain_formats":null})"},
+        {"sendFile", R"({"success":true,"message":["File Accepted"],"file_name":"f.csv","file_id":null})"},
+        {"fileStatus", R"({"success":true,"file_id":null,"file_name":"f.csv","upload_date":null,)"
+                       R"("file_status":"Complete","complete_percentage":"100%","return_url":null})"},
+    };
+    for (const auto& [name, body] : bodies) {
+        EXPECT_EQ(outcomeOf(callNamed(calls, name), api, body, path), 1) << name << " with " << body;
+    }
+    std::filesystem::remove_all(dir);
+}
+
 TEST(OfflineApi, DocumentedExamplesStillParse) {
     // E7 ACCEPT: the documented example responses (zerobounce.net/docs, as the
     // SDKs' fixtures carry them) still parse, nulls included.
@@ -3455,6 +3525,134 @@ TEST(OfflineApi, DocumentedExamplesStillParse) {
                                 R"("company_name":"Internet Assigned Numbers Authority","did_you_mean":"","failure_reason":""})"},
         {"findEmailByDomain 2", R"({"email":"","email_confidence":"undetermined","domain":"betheexample.org",)"
                                 R"("company_name":"Example Inc","did_you_mean":"","failure_reason":""})"},
+        // zerobounce.net: batch validate, three rows and no errors.
+        {"validateBatch", R"EX({
+      "email_batch": [
+          {
+              "address": "john.doe@zerobounce.net",
+              "status": "valid",
+              "sub_status": "",
+              "free_email": false,
+              "catchall_domain": true,
+              "did_you_mean": null,
+              "account": "johndoe",
+              "domain": "zerobounce.net",
+              "domain_age_days": "3431",
+              "active_in_days": "30",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "g-suite",
+              "mx_found": "true",
+              "mx_record": "aspmx.l.google.com",
+              "firstname": "dan",
+              "lastname": "cotet",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2026-06-18 07:05:00.033"
+          },
+          {
+              "address": "invalid@example.com",
+              "status": "invalid",
+              "sub_status": "mailbox_not_found",
+              "free_email": false,
+              "did_you_mean": null,
+              "account": null,
+              "domain": null,
+              "domain_age_days": "9692",
+              "active_in_days": "365",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "example",
+              "mx_found": "true",
+              "mx_record": "mx.example.com",
+              "catchall_domain": false,
+              "firstname": "zero",
+              "lastname": "bounce",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2020-09-17 17:43:11.830"
+          },
+          {
+              "address": "disposable@example.com",
+              "status": "do_not_mail",
+              "sub_status": "disposable",
+              "free_email": false,
+              "did_you_mean": null,
+              "account": null,
+              "domain": null,
+              "domain_age_days": "9692",
+              "active_in_days": "365",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "example",
+              "mx_found": "true",
+              "mx_record": "mx.example.com",
+              "catchall_domain": false,
+              "firstname": "zero",
+              "lastname": "bounce",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2020-09-17 17:43:11.830"
+          }
+      ],
+      "errors": []
+  })EX"},
+        // zerobounce.net: get-api-usage, with the leading-period and alias sub-statuses.
+        {"getApiUsage", R"EX({
+      "total": 120,
+      "status_valid": 17,
+      "status_invalid": 69,
+      "status_catch_all": 9,
+      "status_do_not_mail": 16,
+      "status_spamtrap": 0,
+      "status_unknown": 6,
+      "sub_status_toxic": 0,
+      "sub_status_disposable": 1,
+      "sub_status_role_based": 1,
+      "sub_status_possible_trap": 0,
+      "sub_status_global_suppression": 14,
+      "sub_status_timeout_exceeded": 0,
+      "sub_status_mail_server_temporary_error": 0,
+      "sub_status_mail_server_did_not_respond": 0,
+      "sub_status_greylisted": 6,
+      "sub_status_antispam_system": 0,
+      "sub_status_does_not_accept_mail": 27,
+      "sub_status_exception_occurred": 0,
+      "sub_status_failed_syntax_check": 20,
+      "sub_status_mailbox_not_found": 12,
+      "sub_status_unroutable_ip_address": 0,
+      "sub_status_possible_typo": 0,
+      "sub_status_no_dns_entries": 10,
+      "sub_status_role_based_catch_all": 0,
+      "sub_status_mailbox_quota_exceeded": 0,
+      "sub_status_forcible_disconnect": 0,
+      "sub_status_failed_smtp_connection": 0,
+      "sub_status_leading_period_removed": 0,
+      "sub_status_alias_address": 2,
+      "sub_status_mx_forward": 0,
+      "sub_status_alternate": 0,
+      "sub_status_blocked": 0,
+      "sub_status_allowed": 0,
+      "start_date": "1/1/2023",
+      "end_date": "1/30/2024"
+    })EX"},
+        // zerobounce.net: file status with file_phase_2_status "N/A".
+        {"fileStatus", R"EX({
+    "success": true,
+    "file_id": "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+    "file_name": "Your file name.csv",
+    "upload_date": "2023-04-28T15:25:41Z",
+    "file_status": "Complete",
+    "file_phase_2_status": "N/A",
+    "complete_percentage": "100%",
+    "return_url": "Your return URL if provided when calling sendfile API"
+  })EX"},
         {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"unknown","confidence":"undetermined",)"
                                  R"("did_you_mean":"","failure_reason":"","other_domain_formats":[]})"},
         {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"first.last","confidence":"high",)"
@@ -3562,6 +3760,134 @@ TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
         {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"first.last","confidence":"high",)"
                                  R"("did_you_mean":"","failure_reason":"","other_domain_formats":[{"format":"first_last",)"
                                  R"("confidence":"high"},{"format":"first","confidence":"medium"}]})"},
+        // zerobounce.net: batch validate.
+        {"validateBatch", R"EX({
+      "email_batch": [
+          {
+              "address": "john.doe@zerobounce.net",
+              "status": "valid",
+              "sub_status": "",
+              "free_email": false,
+              "catchall_domain": true,
+              "did_you_mean": null,
+              "account": "johndoe",
+              "domain": "zerobounce.net",
+              "domain_age_days": "3431",
+              "active_in_days": "30",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "g-suite",
+              "mx_found": "true",
+              "mx_record": "aspmx.l.google.com",
+              "firstname": "dan",
+              "lastname": "cotet",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2026-06-18 07:05:00.033"
+          },
+          {
+              "address": "invalid@example.com",
+              "status": "invalid",
+              "sub_status": "mailbox_not_found",
+              "free_email": false,
+              "did_you_mean": null,
+              "account": null,
+              "domain": null,
+              "domain_age_days": "9692",
+              "active_in_days": "365",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "example",
+              "mx_found": "true",
+              "mx_record": "mx.example.com",
+              "catchall_domain": false,
+              "firstname": "zero",
+              "lastname": "bounce",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2020-09-17 17:43:11.830"
+          },
+          {
+              "address": "disposable@example.com",
+              "status": "do_not_mail",
+              "sub_status": "disposable",
+              "free_email": false,
+              "did_you_mean": null,
+              "account": null,
+              "domain": null,
+              "domain_age_days": "9692",
+              "active_in_days": "365",
+              "active_first_seen": "2026-02-25",
+              "smtp_provider": "example",
+              "mx_found": "true",
+              "mx_record": "mx.example.com",
+              "catchall_domain": false,
+              "firstname": "zero",
+              "lastname": "bounce",
+              "gender": "male",
+              "country": null,
+              "region": null,
+              "city": null,
+              "zipcode": null,
+              "processed_at": "2020-09-17 17:43:11.830"
+          }
+      ],
+      "errors": []
+  })EX"},
+        // zerobounce.net: get-api-usage.
+        {"getApiUsage", R"EX({
+      "total": 120,
+      "status_valid": 17,
+      "status_invalid": 69,
+      "status_catch_all": 9,
+      "status_do_not_mail": 16,
+      "status_spamtrap": 0,
+      "status_unknown": 6,
+      "sub_status_toxic": 0,
+      "sub_status_disposable": 1,
+      "sub_status_role_based": 1,
+      "sub_status_possible_trap": 0,
+      "sub_status_global_suppression": 14,
+      "sub_status_timeout_exceeded": 0,
+      "sub_status_mail_server_temporary_error": 0,
+      "sub_status_mail_server_did_not_respond": 0,
+      "sub_status_greylisted": 6,
+      "sub_status_antispam_system": 0,
+      "sub_status_does_not_accept_mail": 27,
+      "sub_status_exception_occurred": 0,
+      "sub_status_failed_syntax_check": 20,
+      "sub_status_mailbox_not_found": 12,
+      "sub_status_unroutable_ip_address": 0,
+      "sub_status_possible_typo": 0,
+      "sub_status_no_dns_entries": 10,
+      "sub_status_role_based_catch_all": 0,
+      "sub_status_mailbox_quota_exceeded": 0,
+      "sub_status_forcible_disconnect": 0,
+      "sub_status_failed_smtp_connection": 0,
+      "sub_status_leading_period_removed": 0,
+      "sub_status_alias_address": 2,
+      "sub_status_mx_forward": 0,
+      "sub_status_alternate": 0,
+      "sub_status_blocked": 0,
+      "sub_status_allowed": 0,
+      "start_date": "1/1/2023",
+      "end_date": "1/30/2024"
+    })EX"},
+        // zerobounce.net: file status, N/A.
+        {"fileStatus", R"EX({
+    "success": true,
+    "file_id": "aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff",
+    "file_name": "Your file name.csv",
+    "upload_date": "2023-04-28T15:25:41Z",
+    "file_status": "Complete",
+    "file_phase_2_status": "N/A",
+    "complete_percentage": "100%",
+    "return_url": "Your return URL if provided when calling sendfile API"
+  })EX"},
         {"listS3files", R"([{"name":"emails.csv","size":1024,"last_modified":"2026-01-01T00:00:00Z"}])"},
     };
     const std::vector<json> replacements{nullptr, true, 5, 5.5, "x", json::array(), json::object()};
