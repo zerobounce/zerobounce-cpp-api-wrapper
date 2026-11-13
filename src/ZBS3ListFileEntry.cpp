@@ -16,6 +16,11 @@ std::vector<ZBS3ListFileEntry> ZBS3ListFileEntry::listFromJson(const json& j) {
         return entries;
     }
     for (const auto& item : j) {
+        // E7: each entry is an object; a list of strings or numbers is not a
+        // file list.
+        if (!item.is_object()) {
+            throw ZBJsonFieldTypeError("listS3files entry");
+        }
         entries.push_back(from_json(item));
     }
     return entries;

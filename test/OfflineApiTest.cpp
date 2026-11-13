@@ -3068,7 +3068,9 @@ TEST(OfflineApi, TypedCallsRejectJsonOfTheWrongShape) {
     api.status = 200;
     api.contentType = "application/json";
     int typed = 0;
-    for (const std::string body : {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] ", "{}"}) {
+    // Arrays a decoder could read into a struct by position too.
+    for (const std::string body : {"0", "1.5", "true", "false", "null", "\"x\"", "[]", "[{}]", " [ ] ", "{}",
+             R"(["x"])", R"(["a@example.com",10])", R"([true,"3"])", R"(["7"])", R"(["a@b.c","valid"])"}) {
         api.body = body;
         for (const auto& call : everyPublicCall(client)) {
             if (call.download) {
@@ -3289,10 +3291,15 @@ TEST(OfflineApi, TypedCallsRejectFieldsOfTheWrongType) {
     const auto dir = freshTempDir("field-types");
     const std::string path = (dir / "out.csv").string();
     const auto calls = everyPublicCall(client);
-    for (const std::string body : {R"({})", R"({"Credits":null})", R"({"Credits":true})", R"({"Credits":5})",
+    for (const std::string body : {R"({})", R"({"Credits":null})", R"({"Credits":true})",
              R"({"Credits":5.5})", R"({"Credits":"abc"})", R"({"Credits":"5.0"})", R"({"Credits":""})",
              R"({"Credits":" 5"})", R"({"Credits":"5abc"})", R"({"Credits":"99999999999999999999"})",
-             R"({"Credits":[1]})", R"({"Credits":{}})"}) {
+             R"({"Credits":[1]})", R"({"Credits":{}})",
+             // A JSON integer is an answer only when it is a whole number in
+             // the range of int: no fraction or exponent, nothing past INT_MAX.
+             R"({"Credits":5.0})", R"({"Credits":1e3})", R"({"Credits":2147483648})",
+             R"({"Credits":-2147483649})", R"({"Credits":9223372036854775808})",
+             R"({"Credits":99999999999999999999})"}) {
         EXPECT_EQ(outcomeOf(callNamed(calls, "getCredits"), api, body, path), -1) << body;
     }
     for (const std::string body : {R"({})", R"({"address":true,"status":"valid"})",
@@ -3317,6 +3324,14 @@ TEST(OfflineApi, TypedCallsRejectFieldsOfTheWrongType) {
     }
     EXPECT_EQ(outcomeOf(callNamed(calls, "getApiUsage"), api, R"({"total":5.5})", path), -1);
     EXPECT_EQ(outcomeOf(callNamed(calls, "scoreEmail"), api, R"({"email":"a@b.c","score":true})", path), -1);
+    // A score is an integer or the string form of one: 3.0.1 read 5.5 and
+    // "5.5" as 5.
+    for (const std::string body : {R"({"email":"a@b.c","score":5.5})", R"({"email":"a@b.c","score":"5.5"})",
+             R"({"email":"a@b.c","score":"abc"})", R"({"email":"a@b.c","score":"9 "})",
+             R"({"email":"a@b.c","score":""})", R"({"email":"a@b.c","score":2147483648})"}) {
+        EXPECT_EQ(outcomeOf(callNamed(calls, "scoreEmail"), api, body, path), -1) << body;
+    }
+    EXPECT_EQ(outcomeOf(callNamed(calls, "scoreEmail"), api, R"({"email":"a@b.c","score":"10"})", path), 1);
     std::filesystem::remove_all(dir);
 }
 
@@ -3405,6 +3420,12 @@ TEST(OfflineApi, DocumentedExamplesStillParse) {
     const std::vector<std::pair<std::string, std::string>> examples{
         {"getCredits", R"({"Credits":"123456"})"},
         {"getCredits", R"({"Credits":"-1"})"},
+        // Credits as a JSON integer: zerobounce.net's own getcredits example,
+        // verbatim, and the ends of the int range.
+        {"getCredits", R"({"Credits":2375323})"},
+        {"getCredits", R"({"Credits":-1})"},
+        {"getCredits", R"({"Credits":2147483647})"},
+        {"getCredits", R"({"Credits":-2147483648})"},
         {"getApiUsage", usage},
         {"getActivityData", R"({"found":true,"active_in_days":"180"})"},
         {"getActivityData", R"({"found":false,"active_in_days":null})"},
@@ -3452,6 +3473,137 @@ TEST(OfflineApi, DocumentedExamplesStillParse) {
     api.body = R"({"Credits":"123456"})";
     client.getCredits([&](ZBCreditsResponse r) { credits = r.credits; }, [](ZBErrorResponse) {});
     EXPECT_EQ(credits, 123456);
+    api.body = R"({"Credits":2375323})";
+    client.getCredits([&](ZBCreditsResponse r) { credits = r.credits; }, [](ZBErrorResponse) {});
+    EXPECT_EQ(credits, 2375323);
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+/// Every JSON pointer below root in j (objects' members and arrays' items).
+void collectPointers(const json& j, const json::json_pointer& at, std::vector<json::json_pointer>& out) {
+    if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            const auto child = at / it.key();
+            out.push_back(child);
+            collectPointers(it.value(), child, out);
+        }
+    } else if (j.is_array()) {
+        for (size_t i = 0; i < j.size(); ++i) {
+            const auto child = at / i;
+            out.push_back(child);
+            collectPointers(j[i], child, out);
+        }
+    }
+}
+
+}  // namespace
+
+TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
+    // Standard section 3: a value of another JSON type than the documented
+    // one, at any path of an example (a nested object, an array item, a batch
+    // row, a row's field), is an API error with status 200. null is taken only
+    // for an optional object field; an array item that is null is a wrong
+    // type too. Credits and a score also take a JSON integer, sendfile's
+    // message a list of strings. The examples are copied verbatim from
+    // zerobounce.net/docs where the site has a success example, and from the
+    // repo's fixtures for the other typed calls.
+    const std::vector<std::pair<std::string, std::string>> examples{
+        {"getCredits", R"({"Credits":2375323})"},
+        {"getCredits", R"({"Credits":"-1"})"},
+        {"validate", "{\n      \"address\": \"john.doe@zerobounce.net\",\n      \"status\": \"valid\",\n"
+                     "      \"sub_status\": \"\",\n      \"free_email\": false,\n      \"catchall_domain\": true,\n"
+                     "      \"did_you_mean\": null,\n      \"account\": \"johndoe\",\n      \"domain\": \"zerobounce.net\",\n"
+                     "      \"domain_age_days\": \"3431\",\n      \"active_in_days\": \"30\",\n"
+                     "      \"active_first_seen\": \"2026-02-25\",\n      \"smtp_provider\": \"g-suite\",\n"
+                     "      \"mx_found\": \"true\",\n      \"mx_record\": \"aspmx.l.google.com\",\n"
+                     "      \"firstname\": \"dan\",\n      \"lastname\": \"cotet\",\n      \"gender\": \"male\",\n"
+                     "      \"country\": null,\n      \"region\": null,\n      \"city\": null,\n      \"zipcode\": null,\n"
+                     "      \"processed_at\": \"2026-06-18 07:05:00.033\"\n  }"},
+        {"validate", R"({"address":"a@example.com","Message":"Greylisted email, we will retry"})"},
+        {"validate POST", R"({"address":"a@example.com","status":"valid","sub_status":"","free_email":false,)"
+                          R"("catchall_domain":false,"domain_age_days":"9692","mx_found":"true","firstname":"zero"})"},
+        {"validateBatch", R"({"email_batch":[{"address":"valid@example.com","status":"valid","sub_status":"",)"
+                          R"("free_email":false,"did_you_mean":null,"account":null,"domain":null,"domain_age_days":"9692",)"
+                          R"("smtp_provider":"example","catchall_domain":false,"mx_found":"true","mx_record":"mx.example.com",)"
+                          R"("firstname":"zero","lastname":"bounce","gender":"male","country":"United States",)"
+                          R"("region":"Florida","city":"West Palm Beach","zipcode":"33401",)"
+                          R"("processed_at":"2023-03-23 13:30:28.105"}],)"
+                          R"("errors":[{"error":"Mock error message","email_address":"invalid@example.com"}]})"},
+        {"sendFile", "{\n      \"success\": true,\n      \"message\": \"File Accepted\",\n"
+                     "      \"file_name\": \"Your file name.csv\",\n"
+                     "      \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\"\n    }"},
+        {"sendFile", R"({"success":true,"message":["File Accepted"],"file_name":"f.csv","file_id":"fid"})"},
+        {"fileStatus", "{\n    \"success\": true,\n    \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\",\n"
+                       "    \"file_name\": \"Your file name.csv\",\n    \"upload_date\": \"2023-04-28T15:25:41Z\",\n"
+                       "    \"file_status\": \"Complete\",\n    \"file_phase_2_status\": \"Complete\",\n"
+                       "    \"complete_percentage\": \"100%\",\n"
+                       "    \"return_url\": \"Your return URL if provided when calling sendfile API\"\n  }"},
+        {"deleteFile", "{\n    \"success\": true,\n    \"message\": \"File Deleted\",\n    \"file_name\": \"test2\",\n"
+                       "    \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n  }"},
+        {"scoringSendFile", "{\n          \"success\": true,\n          \"message\": \"File Accepted\",\n"
+                            "          \"file_name\": \"Your file name.csv\",\n"
+                            "          \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\"\n      }"},
+        {"scoringFileStatus", "{\n          \"success\": true,\n          \"file_id\": \"aaaaaaaa-zzzz-xxxx-yyyy-5003727fffff\",\n"
+                              "          \"file_name\": \"Your file name.csv\",\n"
+                              "          \"upload_date\": \"2023-04-28T15:25:41Z\",\n          \"file_status\": \"Complete\",\n"
+                              "          \"complete_percentage\": \"100%\",\n"
+                              "          \"return_url\": \"Your return URL if provided when calling sendfile API\"\n      }"},
+        {"scoringDeleteFile", "{\n        \"success\": true,\n        \"message\": \"File Deleted\",\n"
+                              "        \"file_name\": \"test2\",\n"
+                              "        \"file_id\": \"b222a0fd-90d5-416c-8f1a-9cc3851fc823\"\n    }"},
+        {"getApiUsage", R"({"total":10,"status_valid":10,"status_invalid":0,"sub_status_toxic":0,)"
+                        R"("start_date":"1/12/2010","end_date":"12/1/2030"})"},
+        {"getActivityData", R"({"found":true,"active_in_days":"180"})"},
+        {"scoreEmail", R"({"email":"a@example.com","score":10})"},
+        {"findEmailByDomain 2", R"({"email":"john.doe@example.com","email_confidence":"high","domain":"",)"
+                                R"("company_name":"Internet Assigned Numbers Authority","did_you_mean":"","failure_reason":""})"},
+        {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"first.last","confidence":"high",)"
+                                 R"("did_you_mean":"","failure_reason":"","other_domain_formats":[{"format":"first_last",)"
+                                 R"("confidence":"high"},{"format":"first","confidence":"medium"}]})"},
+        {"listS3files", R"([{"name":"emails.csv","size":1024,"last_modified":"2026-01-01T00:00:00Z"}])"},
+    };
+    const std::vector<json> replacements{nullptr, true, 5, 5.5, "x", json::array(), json::object()};
+    EchoingApi api;
+    EchoingClient client(api, "nested-sweep");
+    const auto dir = freshTempDir("nested-sweep");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    int checked = 0;
+    for (const auto& [name, body] : examples) {
+        const PublicCall& call = callNamed(calls, name);
+        ASSERT_EQ(outcomeOf(call, api, body, path), 1) << name << " with " << body;
+        const json root = json::parse(body);
+        const bool greylist = root.is_object() && root.contains("Message");
+        std::vector<json::json_pointer> pointers;
+        collectPointers(root, json::json_pointer(), pointers);
+        for (const auto& pointer : pointers) {
+            const json& original = root.at(pointer);
+            // A null in the example does not show the field's type.
+            if (original.is_null()) continue;
+            const bool member = root.at(pointer.parent_pointer()).is_object();
+            const std::string key = member ? pointer.back() : "";
+            for (const auto& value : replacements) {
+                if (value.type() == original.type() ||
+                    (value.is_number() && original.is_number() && value.is_number_float() == original.is_number_float())) {
+                    continue;
+                }
+                const bool required = greylist ? key == "Message" : (key == "Credits" || key == "address" || key == "status");
+                const bool alsoTakes = ((key == "Credits" || key == "score") && value.is_number_integer()) ||
+                    (key == "message" && (name == "sendFile" || name == "scoringSendFile") &&
+                     (value.is_array() || value.is_string()));
+                const bool ok = (value.is_null() && member && !required) || alsoTakes;
+                json changed = root;
+                changed[pointer] = value;
+                ++checked;
+                EXPECT_EQ(outcomeOf(call, api, changed.dump(), path), ok ? 1 : -1)
+                    << name << " " << pointer.to_string() << " = " << value.dump() << ": " << changed.dump();
+            }
+        }
+    }
+    // 19 examples, about 600 substitutions when this was written.
+    EXPECT_GE(checked, 500);
     std::filesystem::remove_all(dir);
 }
 

@@ -1,3 +1,5 @@
+#include <cstdint>
+#include <limits>
 #include <sstream>
 
 #include "ZeroBounce/utils.h"
@@ -16,9 +18,28 @@ std::string ZBCreditsResponse::toString()
 ZBCreditsResponse ZBCreditsResponse::from_json(const json& j) {
     ZBCreditsResponse r;
 
-    // Credits is a JSON string holding an integer ("-1" for a dead key).
-    // Missing, null, another JSON type, or text that is not an integer
-    // ("abc", "5.0", " 5") is not an answer: std::stoi would read "5.0" as 5.
+    // Credits is an integer, sent as a JSON string ("-1" for a dead key,
+    // "12345") or as a JSON integer ({"Credits":2375323}, zerobounce.net's own
+    // example). Missing, null, another JSON type (a fraction, a boolean), text
+    // that is not an integer ("abc", "5.0", " 5": std::stoi would read "5.0"
+    // as 5) or a value outside int is not an answer.
+    if (j.is_object() && j.contains("Credits") && j["Credits"].is_number_integer()) {
+        const json& value = j["Credits"];
+        if (value.is_number_unsigned()) {
+            const auto number = value.get<std::uint64_t>();
+            if (number > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+                throw ZBJsonFieldTypeError("Credits");
+            }
+            r.credits = static_cast<int>(number);
+        } else {
+            const auto number = value.get<std::int64_t>();
+            if (number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max()) {
+                throw ZBJsonFieldTypeError("Credits");
+            }
+            r.credits = static_cast<int>(number);
+        }
+        return r;
+    }
     const std::string text = zbRequireString(j, "Credits");
     size_t digits = (!text.empty() && text[0] == '-') ? 1 : 0;
     if (digits == text.size() ||
