@@ -3891,6 +3891,12 @@ TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
         {"listS3files", R"([{"name":"emails.csv","size":1024,"last_modified":"2026-01-01T00:00:00Z"}])"},
     };
     const std::vector<json> replacements{nullptr, true, 5, 5.5, "x", json::array(), json::object()};
+    // A file job's message is a string or a list of strings on every file job
+    // answer (send, delete and file status, scoring and finder/domain included).
+    const std::set<std::string> fileJobCalls{
+        "sendFile", "scoringSendFile", "sendEmailFinderFile", "sendDomainSearchFile",
+        "deleteFile", "scoringDeleteFile", "emailFinderDeleteFile", "domainSearchDeleteFile",
+        "fileStatus", "scoringFileStatus", "emailFinderFileStatus", "domainSearchFileStatus"};
     EchoingApi api;
     EchoingClient client(api, "nested-sweep");
     const auto dir = freshTempDir("nested-sweep");
@@ -3917,7 +3923,7 @@ TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
                 }
                 const bool required = greylist ? key == "Message" : (key == "Credits" || key == "address" || key == "status");
                 const bool alsoTakes = ((key == "Credits" || key == "score") && value.is_number_integer()) ||
-                    (key == "message" && (name == "sendFile" || name == "scoringSendFile") &&
+                    (key == "message" && fileJobCalls.count(name) == 1 &&
                      (value.is_array() || value.is_string()));
                 const bool ok = (value.is_null() && member && !required) || alsoTakes;
                 json changed = root;
@@ -3948,6 +3954,162 @@ TEST(OfflineApi, ADeadKeyOn200IsAnErrorOnEveryCall) {
             EXPECT_EQ(outcomeOf(call, api, body, path), -1) << call.name << " with " << body;
             EXPECT_FALSE(std::filesystem::exists(path)) << call.name << " saved a file";
         }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// ---- Round 17: file-job message lists, message-only finder answers, null
+// fields and the HTML-sniff markers. ----
+
+namespace {
+
+/// The message of a file-job answer, or "<error>" when the call reported one.
+template <typename Fn>
+std::string fileJobMessage(Fn call) {
+    std::string message = "<no response>";
+    call(
+        [&](auto response) { message = response.message; },
+        [&](ZBErrorResponse error) {
+            message = "<error " + std::to_string(error.statusCode) + ">" +
+                (error.errors.empty() ? std::string() : error.errors.front());
+        });
+    return message;
+}
+
+}  // namespace
+
+TEST(OfflineApi, FileJobMessageListIsJoinedWithNewlines) {
+    // A file job's message is one string or a list of strings; the public
+    // type is one string, so a list is joined with "\n" on every file-job
+    // answer, as the send calls already keep it.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "application/json";
+    api.body = R"({"success":true,"message":["First line.","Second line."],"file_id":"fid",)"
+               R"("file_name":"f.csv","file_status":"Complete"})";
+    const std::string expected = "First line.\nSecond line.";
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.scoringDeleteFile("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.emailFinderDeleteFile("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.domainSearchDeleteFile("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.fileStatus("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.scoringFileStatus("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.emailFinderFileStatus("fid", s, e); }), expected);
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.domainSearchFileStatus("fid", s, e); }), expected);
+    // A one-string message is unchanged, and null is an empty message.
+    api.body = R"({"success":true,"message":"Deleted.","file_id":"fid"})";
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }), "Deleted.");
+    api.body = R"({"success":true,"message":null,"file_id":"fid"})";
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }), "");
+    // Another JSON type is an error with status 200.
+    api.body = R"({"success":true,"message":5,"file_id":"fid"})";
+    EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }).rfind("<error 200>", 0), 0u);
+}
+
+TEST(OfflineApi, GetFileJsonErrorListKeepsEveryLine) {
+    // getFile's JSON error body: a list of lines is joined with "\n", not cut
+    // to its first line.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "application/json";
+    api.body = R"({"success":false,"message":["File cannot be found.","Check the file id."]})";
+    const auto dir = freshTempDir("getfile-list");
+    const std::string path = (dir / "out.csv").string();
+    std::string text;
+    client.getFile("fid", path, nullptr, [&](ZBErrorResponse error) {
+        text = error.errors.empty() ? "" : error.errors.front();
+        EXPECT_EQ(error.statusCode, 200);
+    });
+    EXPECT_EQ(text, "File cannot be found.\nCheck the file id.");
+    EXPECT_FALSE(std::filesystem::exists(path));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, MessageOnlyFinderAnswersAreErrorsWhateverTheValue) {
+    // An email-finder or domain-search body made only of message keys is an
+    // error with status 200 whatever the value: a string, a blank, null or a
+    // list. Only the keys decide it.
+    EchoingApi api;
+    EchoingClient client(api, "finder-message-only");
+    const auto dir = freshTempDir("finder-message-only");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    const std::vector<std::string> bodies{
+        R"({"message":"Not found"})", R"({"message":""})", R"({"message":"   "})", R"({"message":null})",
+        R"({"message":["a","b"]})", R"({"message":[]})", R"({"Message":null,"error":""})", R"({"detail":["x"]})",
+    };
+    for (const auto& body : bodies) {
+        for (const char* name : {"findEmailByDomain 4", "findEmailByCompanyName 4", "searchDomainByDomain"}) {
+            EXPECT_EQ(outcomeOf(callNamed(calls, name), api, body, path), -1) << name << " with " << body;
+        }
+    }
+    // Control: a finder answer with an email is still a result.
+    EXPECT_EQ(outcomeOf(callNamed(calls, "findEmailByDomain 4"), api,
+                        R"({"email":"ada@example.com","message":null})", path), 1);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, NullIsAcceptedForEveryNonRequiredField) {
+    // Standard section 3: null is never an error on a non-required field. Only
+    // Credits, validate's address and status, and each batch row's address and
+    // status must be present and non-null. Every field a model reads is set to
+    // null here, found by scanning the model sources.
+    EchoingApi api;
+    EchoingClient client(api, "null-sweep");
+    const auto dir = freshTempDir("null-sweep");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    const auto raw = rawJsonMethods();
+    const std::set<std::string> fields = modelFieldNames();
+    EXPECT_GE(fields.size(), 70u);
+    const std::set<std::string> required{"Credits", "address", "status"};
+    const std::set<std::string> lists{"errors", "other_domain_formats", "email_batch"};
+    std::string top;
+    std::string row;
+    for (const auto& field : fields) {
+        if (required.count(field) == 0 && lists.count(field) == 0) {
+            top += ",\"" + field + "\":null";
+            row += ",\"" + field + "\":null";
+        }
+    }
+    const std::string body =
+        R"({"Credits":"7","address":"a@b.c","status":"valid","errors":[],"other_domain_formats":[],)"
+        R"("email_batch":[{"address":"a@b.c","status":"valid")" + row + "}]" + top + "}";
+    for (const auto& call : calls) {
+        if (!isTypedCall(call, raw) || call.name == "listS3files") {
+            continue;
+        }
+        EXPECT_EQ(outcomeOf(call, api, body, path), 1) << call.name << " with " << body;
+    }
+    EXPECT_EQ(outcomeOf(callNamed(calls, "listS3files"), api,
+                        R"([{"name":null,"size":null,"last_modified":null}])", path), 1);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, EachHtmlSniffMarkerRejectsADownload) {
+    // zbBodyLooksLikeHtml has four markers: <!doctype html, <html, <head and
+    // <body. Each body below carries exactly one, served as text/csv, so only
+    // that marker can reject it; dropping any one lets its body be saved.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "text/csv";
+    const auto dir = freshTempDir("html-marker");
+    const std::string path = (dir / "out.csv").string();
+    for (const char* body : {
+             "<!DOCTYPE html>\nemail\nx@example.com\n",
+             "<html>x@example.com</html>",
+             "<HEAD>x@example.com</HEAD>",
+             "<Body>x@example.com</Body>",
+         }) {
+        api.body = body;
+        int errors = 0;
+        client.getFile("fid", path, [&](ZBGetFileResponse) { ADD_FAILURE() << body << " was saved"; },
+            [&](ZBErrorResponse error) {
+                ++errors;
+                EXPECT_EQ(error.statusCode, 200) << body;
+            });
+        EXPECT_EQ(errors, 1) << body;
+        EXPECT_FALSE(std::filesystem::exists(path)) << body;
     }
     std::filesystem::remove_all(dir);
 }

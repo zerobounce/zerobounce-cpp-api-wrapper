@@ -19,7 +19,7 @@ ZBGetFileResponse ZBGetFileResponse::from_json(const json& j) {
     ZBGetFileResponse r;
 
     r.success = getOrDefault<bool>(j, "success", false);
-    r.message = getOrDefault<std::string>(j, "message", "");
+    r.message = zbFileJobMessage(j);
 
     return r;
 }

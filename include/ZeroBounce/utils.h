@@ -99,4 +99,35 @@ T getOrDefault(json j, std::string key, T defaultValue) {
     return j[key].get<T>();
 }
 
+/**
+ * The message of a file-job answer (send, delete, file status, getfile JSON):
+ * a JSON string, or a list of strings joined with "\n". Absent or null is "".
+ * Any other JSON type throws ZBJsonFieldTypeError, as every typed field does.
+ */
+inline std::string zbFileJobMessage(const json& j) {
+    if (!j.is_object() || j.count("message") == 0 || j.at("message").is_null()) {
+        return "";
+    }
+    const json& message = j.at("message");
+    if (message.is_string()) {
+        return message.get<std::string>();
+    }
+    if (!message.is_array()) {
+        throw ZBJsonFieldTypeError("message");
+    }
+    std::string joined;
+    bool first = true;
+    for (const auto& item : message) {
+        if (!item.is_string()) {
+            throw ZBJsonFieldTypeError("message");
+        }
+        if (!first) {
+            joined += "\n";
+        }
+        joined += item.get<std::string>();
+        first = false;
+    }
+    return joined;
+}
+
 #endif

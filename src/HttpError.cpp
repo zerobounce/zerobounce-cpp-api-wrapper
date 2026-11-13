@@ -103,8 +103,9 @@ std::string jsonErrorOnlyText(const json& object) {
     return jsonErrorTextFrom(object, {"error", "error_message", "Error"});
 }
 
-// Whether a body is nothing but a message: an object with no "success" field
-// whose keys are all message keys, at least one a non-empty string.
+// Whether a body is nothing but a message: a non-empty object with no "success"
+// field whose keys are all message keys. The values do not matter: a string, a
+// blank, null or a list is a message.
 bool jsonMessageOnly(const json& object) {
     if (!object.is_object() || object.empty() || object.contains("success")) {
         return false;
@@ -116,7 +117,7 @@ bool jsonMessageOnly(const json& object) {
             return false;
         }
     }
-    return !jsonErrorText(object).empty();
+    return true;
 }
 
 bool jsonHasErrorOrMessageKey(const json& object) {

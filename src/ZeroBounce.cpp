@@ -109,8 +109,23 @@ std::string ZeroBounce::formatGetFileErrorMessage(const std::string& body) {
                     return t;
                 }
             }
-            if (v.is_array() && !v.empty() && v[0].is_string()) {
-                return v[0].get<std::string>();
+            if (v.is_array()) {
+                // Every non-empty line of a list, joined with "\n" as the
+                // file-job message is.
+                std::string joined;
+                bool any = false;
+                for (const auto& item : v) {
+                    if (item.is_string() && !item.get<std::string>().empty()) {
+                        if (any) {
+                            joined += "\n";
+                        }
+                        joined += item.get<std::string>();
+                        any = true;
+                    }
+                }
+                if (any) {
+                    return joined;
+                }
             }
         }
         return body;
