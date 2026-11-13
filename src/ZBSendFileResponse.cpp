@@ -29,15 +29,15 @@ ZBSendFileResponse ZBSendFileResponse::from_json(const json& j) {
 
     r.success = getOrDefault<bool>(j, "success", false);
 
-    if (j.at("message").is_array()) {
+    if (j.contains("message") && j["message"].is_array()) {
         std::vector<std::string> messageArray = getOrDefault<std::vector<std::string>>(j, "message", {});
         r.message.insert(r.message.end(), messageArray.begin(), messageArray.end());
     } else {
         r.message.push_back(getOrDefault<std::string>(j, "message", ""));
     }
 
-    r.fileName = j.value("file_name", "");
-    r.fileId = j.value("file_id", "");
+    r.fileName = getOrDefault<std::string>(j, "file_name", "");
+    r.fileId = getOrDefault<std::string>(j, "file_id", "");
 
     return r;
 }

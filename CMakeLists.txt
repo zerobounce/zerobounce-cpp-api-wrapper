@@ -100,7 +100,8 @@ add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp t
     test/TransportTest.cpp)
 target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1
     ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
-    ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv")
+    ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
+    ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
 
 # The live API suite is its own executable and is off by default, so a normal

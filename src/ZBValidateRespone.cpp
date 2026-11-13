@@ -49,6 +49,16 @@ std::string ZBValidateResponse::toString(bool isBatch)
 ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     ZBValidateResponse r;
 
+    // A result names its address and status, as JSON strings. The one answer
+    // without them is a greylist_processing validate still in progress, which
+    // carries its text in Message.
+    const bool greylistAnswer = j.is_object() && j.contains("Message") && j["Message"].is_string() &&
+        !j["Message"].get<std::string>().empty();
+    if (!greylistAnswer) {
+        zbRequireString(j, "address");
+        zbRequireString(j, "status");
+    }
+
     r.address = getOrDefault<std::string>(j, "address", "");
     r.status = getOrDefault<ZBValidateStatus>(j, "status", ZBValidateStatus::UnknownValue);
     r.subStatus = getOrDefault<ZBValidateSubStatus>(j, "sub_status", ZBValidateSubStatus::None);
@@ -62,7 +72,7 @@ ZBValidateResponse ZBValidateResponse::from_json(const json& j) {
     r.smtpProvider = getOrDefault<std::string>(j, "smtp_provider", "");
 
     if (j.contains("catchall_domain") && !j["catchall_domain"].is_null()) {
-        r.catchallDomain = j["catchall_domain"].get<bool>();
+        r.catchallDomain = getOrDefault<bool>(j, "catchall_domain", false);
     }
 
     bool mxFound;

@@ -55,8 +55,14 @@ ZBDomainSearchResponse ZBDomainSearchResponse::from_json(const json& json_obj) {
     response.otherDomainFormats = std::vector<ZBDomainFormat>();
     const json domainFormats = json_obj.contains("other_domain_formats")
         ? json_obj["other_domain_formats"] : json::array();
+    if (!domainFormats.is_null() && !domainFormats.is_array()) {
+        throw ZBJsonFieldTypeError("other_domain_formats");
+    }
     if (domainFormats.is_array()) {
         for (int index = 0; index < domainFormats.size(); index ++) {
+            if (!domainFormats.at(index).is_object()) {
+                throw ZBJsonFieldTypeError("other_domain_formats");
+            }
             response.otherDomainFormats.push_back(
             ZBDomainFormat::from_json(domainFormats.at(index))
             );

@@ -34,7 +34,8 @@ static std::optional<int> parseScoreField(const json& j) {
     if (j["score"].is_string()) {
         return std::stoi(j["score"].get<std::string>());
     }
-    return std::nullopt;
+    // A score is a number (or the API's string form of one).
+    throw ZBJsonFieldTypeError("score");
 }
 
 ZBScoreEmailResponse ZBScoreEmailResponse::from_json(const json& j) {

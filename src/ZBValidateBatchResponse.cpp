@@ -55,6 +55,19 @@ std::string ZBValidateBatchResponse::toString()
 ZBValidateBatchResponse ZBValidateBatchResponse::from_json(const json& j) {
     ZBValidateBatchResponse r;
 
+    // Both lists are arrays (or null) of objects.
+    for (const char* list : {"email_batch", "errors"}) {
+        const json& value = j.at(list);
+        if (!value.is_null() && !value.is_array()) {
+            throw ZBJsonFieldTypeError(list);
+        }
+        for (const auto& item : value) {
+            if (!item.is_object()) {
+                throw ZBJsonFieldTypeError(list);
+            }
+        }
+    }
+
     for (auto& emailObj : j.at("email_batch")) {
         ZBValidateResponse emailResponse = ZBValidateResponse::from_json(emailObj);
         r.emailBatch.push_back(emailResponse);

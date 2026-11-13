@@ -2331,10 +2331,12 @@ struct PublicCall {
 std::vector<PublicCall> everyPublicCall(ZeroBounce& client) {
     using Err = OnErrorCallback;
     using Ok = std::function<void()>;
-    // One object every JSON call accepts as a result: the bulk submissions
-    // need "message", the batch call its two lists.
+    // One object every JSON call accepts as a result: the batch call needs
+    // its two lists, getCredits its Credits and validate an address and a
+    // status (E7).
     const std::string object =
-        R"({"success":true,"message":"File Accepted","file_id":"fid","email_batch":[],"errors":[]})";
+        R"({"success":true,"message":"File Accepted","file_id":"fid","email_batch":[],"errors":[],)"
+        R"("Credits":"7","address":"a@example.com","status":"valid"})";
     const std::string csv = "email\nsweep@example.com\n";
     auto call = [](std::string name, std::string body, std::function<void(Ok, Err)> run) {
         return PublicCall{std::move(name), std::move(body), false,
@@ -3183,6 +3185,18 @@ TEST(OfflineApi, EachDecodeStepOfTheRedactionCheckIsNeeded) {
     // A surrogate pair for a character outside the BMP.
     const std::string surrogate = errorFor("k\xF0\x9F\x94\x91y", "echo [k\\ud83d\\udd11y] end");
     EXPECT_NE(surrogate.find("omitted because it contained a credential"), std::string::npos) << surrogate;
+    // A \uXXXX escape for each UTF-8 sequence length the decoder writes: 1
+    // byte (above), 2 bytes (U+00E9), 3 bytes (U+20AC), 4 bytes (the pair
+    // above, and upper-case hex here).
+    const std::vector<std::pair<std::string, std::string>> lengths{
+        {"k\xC3\xA9y", "echo [k\\u00e9y] end"},
+        {"k\xE2\x82\xACy", "echo [k\\u20ACy] end"},
+        {"k\xF0\x9F\x94\x91y", "echo [k\\uD83D\\uDD11y] end"},
+    };
+    for (const auto& [secret, body] : lengths) {
+        const std::string text = errorFor(secret, body);
+        EXPECT_NE(text.find("omitted because it contained a credential"), std::string::npos) << body << ": " << text;
+    }
     // The control: a NUL and escapes with no key behind them stay.
     const std::string control = errorFor(key, "nothing secret %00 here \\u0000 %41");
     EXPECT_EQ(control.find("omitted"), std::string::npos) << control;
@@ -3212,6 +3226,249 @@ TEST(OfflineApi, ANulInTheBodyDoesNotEndTheRedactionCheck) {
                 EXPECT_FALSE(fuzzSecretReadable(text, key, 4)) << label << ": " << text;
             });
             EXPECT_EQ(errors, 1) << label;
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// ---- E7: field types are part of the shape -------------------------------
+
+namespace {
+
+/// Runs one typed call against body (HTTP 200, application/json): 1 for a
+/// result, -1 for an error with status 200, 0 for anything else.
+int outcomeOf(const PublicCall& call, EchoingApi& api, const std::string& body, const std::string& path) {
+    api.status = 200;
+    api.contentType = "application/json";
+    api.body = body;
+    int successes = 0;
+    int errors200 = 0;
+    int others = 0;
+    call.run(path, [&] { ++successes; }, [&](ZBErrorResponse error) {
+        (error.statusCode == 200 ? errors200 : others)++;
+    });
+    if (successes == 1 && errors200 == 0 && others == 0) return 1;
+    if (successes == 0 && errors200 == 1 && others == 0) return -1;
+    return 0;
+}
+
+const PublicCall& callNamed(const std::vector<PublicCall>& calls, const std::string& name) {
+    for (const auto& call : calls) {
+        if (call.name == name) return call;
+    }
+    throw std::runtime_error("no call " + name);
+}
+
+/// Every field name a response model reads, scanned from the model sources
+/// (src/ZB*.cpp but the error parser), so a field added later is swept too.
+std::set<std::string> modelFieldNames() {
+    std::set<std::string> fields;
+    const std::regex read(R"re((?:getOrDefault<[^>]*>+\s*\(\s*\w+\s*,|zbRequireString\(\s*\w+\s*,|\[|contains\(|ZBJsonFieldTypeError\()\s*"(\w+)")re");
+    for (const auto& entry : std::filesystem::directory_iterator(ZB_SOURCE_DIR)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("ZB", 0) != 0 || name.find("Error") != std::string::npos ||
+            entry.path().extension() != ".cpp") {
+            continue;
+        }
+        std::ifstream in(entry.path());
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        for (std::sregex_iterator it(text.begin(), text.end(), read), end; it != end; ++it) {
+            fields.insert((*it)[1]);
+        }
+    }
+    return fields;
+}
+
+}  // namespace
+
+TEST(OfflineApi, TypedCallsRejectFieldsOfTheWrongType) {
+    // checks.md E7: getCredits and validate with a missing, null or
+    // wrong-typed field fail with status 200; nothing is coerced or defaulted.
+    EchoingApi api;
+    EchoingClient client(api, "field-types");
+    const auto dir = freshTempDir("field-types");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    for (const std::string body : {R"({})", R"({"Credits":null})", R"({"Credits":true})", R"({"Credits":5})",
+             R"({"Credits":5.5})", R"({"Credits":"abc"})", R"({"Credits":"5.0"})", R"({"Credits":""})",
+             R"({"Credits":" 5"})", R"({"Credits":"5abc"})", R"({"Credits":"99999999999999999999"})",
+             R"({"Credits":[1]})", R"({"Credits":{}})"}) {
+        EXPECT_EQ(outcomeOf(callNamed(calls, "getCredits"), api, body, path), -1) << body;
+    }
+    for (const std::string body : {R"({})", R"({"address":true,"status":"valid"})",
+             R"({"address":"a@b.c","status":5})", R"({"status":"valid"})", R"({"address":"a@b.c"})",
+             R"({"address":null,"status":"valid"})", R"({"address":"a@b.c","status":null})",
+             R"({"address":"a@b.c","status":"valid","free_email":"maybe"})",
+             R"({"address":"a@b.c","status":"valid","domain_age_days":9692})",
+             R"({"address":"a@b.c","status":"valid","catchall_domain":"no"})",
+             R"({"address":"a@b.c","status":"valid","sub_status":3})"}) {
+        EXPECT_EQ(outcomeOf(callNamed(calls, "validate"), api, body, path), -1) << body;
+        EXPECT_EQ(outcomeOf(callNamed(calls, "validate POST"), api, body, path), -1) << body;
+    }
+    EXPECT_EQ(outcomeOf(callNamed(calls, "validateBatch"), api,
+                        R"({"email_batch":[{"address":"a@b.c","status":5}],"errors":[]})", path), -1);
+    EXPECT_EQ(outcomeOf(callNamed(calls, "validateBatch"), api, R"({"email_batch":"x","errors":[]})", path), -1);
+    // Each batch row needs its address and status too.
+    for (const std::string row : {R"({})", R"({"status":"valid"})", R"({"address":"a@b.c"})",
+             R"({"address":null,"status":"valid"})", R"({"address":"a@b.c","status":null})"}) {
+        const std::string body = R"({"email_batch":[)" + row + R"(],"errors":[]})";
+        EXPECT_EQ(outcomeOf(callNamed(calls, "validateBatch"), api, body, path), -1) << body;
+        EXPECT_EQ(outcomeOf(callNamed(calls, "validateBatch options"), api, body, path), -1) << body;
+    }
+    EXPECT_EQ(outcomeOf(callNamed(calls, "getApiUsage"), api, R"({"total":5.5})", path), -1);
+    EXPECT_EQ(outcomeOf(callNamed(calls, "scoreEmail"), api, R"({"email":"a@b.c","score":true})", path), -1);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, EveryFieldAModelReadsIsTypeChecked) {
+    // E7 by construction: every field any model reads (scanned from the
+    // sources) given as an object, a type no scalar or list field takes,
+    // fails every typed call with 200; and each field alone fails at least
+    // one typed call that takes the same body without it.
+    EchoingApi api;
+    EchoingClient client(api, "field-sweep");
+    const auto dir = freshTempDir("field-sweep");
+    const std::string path = (dir / "out.csv").string();
+    const std::set<std::string> raw = rawJsonMethods();
+    const auto calls = everyPublicCall(client);
+    const std::set<std::string> fields = modelFieldNames();
+    // 76 fields when this was written.
+    EXPECT_GE(fields.size(), 70u);
+    json all = json::object();
+    for (const auto& field : fields) {
+        all[field] = json::object();
+    }
+    int typed = 0;
+    for (const auto& call : calls) {
+        if (!isTypedCall(call, raw)) continue;
+        ++typed;
+        const std::string body = call.name == "listS3files" ? json::array({all}).dump() : all.dump();
+        EXPECT_EQ(outcomeOf(call, api, body, path), -1) << call.name;
+    }
+    EXPECT_GT(typed, 40);
+    for (const auto& field : fields) {
+        // A body every typed call takes, with field (and a row of each list
+        // carrying it) given the wrong type.
+        auto make = [&](bool withField) {
+            json body = {{"success", true}, {"message", "File Accepted"}, {"file_id", "fid"},
+                         {"Credits", "7"}, {"address", "a@b.c"}, {"status", "valid"}};
+            json row = {{"address", "a@b.c"}, {"status", "valid"}};
+            json small = json::object();
+            if (withField) {
+                body[field] = json::object();
+                row[field] = json::object();
+                small[field] = json::object();
+            }
+            if (field != "email_batch") body["email_batch"] = json::array({row});
+            if (field != "errors") body["errors"] = json::array({small});
+            if (field != "other_domain_formats") body["other_domain_formats"] = json::array({small});
+            return body;
+        };
+        int rejected = 0;
+        for (const auto& call : calls) {
+            if (!isTypedCall(call, raw)) continue;
+            auto wrap = [&](const json& body) {
+                return call.name == "listS3files" ? json::array({body}).dump() : body.dump();
+            };
+            if (outcomeOf(call, api, wrap(make(false)), path) != 1) continue;
+            rejected += outcomeOf(call, api, wrap(make(true)), path) == -1 ? 1 : 0;
+        }
+        EXPECT_GT(rejected, 0) << field << " is read without a type check";
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, DocumentedExamplesStillParse) {
+    // E7 ACCEPT: the documented example responses (zerobounce.net/docs, as the
+    // SDKs' fixtures carry them) still parse, nulls included.
+    const std::string row =
+        R"({"address":"valid@example.com","status":"valid","sub_status":"","free_email":false,"did_you_mean":null,)"
+        R"("account":null,"domain":null,"domain_age_days":"9692","smtp_provider":"example","catchall_domain":false,)"
+        R"("mx_found":"true","mx_record":"mx.example.com","firstname":"zero","lastname":"bounce","gender":"male",)"
+        R"("country":"United States","region":"Florida","city":"West Palm Beach","zipcode":"33401",)"
+        R"("processed_at":"2023-03-23 13:30:28.105"})";
+    std::string usage = R"({"total":10,"status_valid":10,"start_date":"1/12/2010","end_date":"12/1/2030")";
+    for (const char* name : {"status_invalid", "status_catch_all", "status_do_not_mail", "status_spamtrap",
+             "status_unknown", "sub_status_toxic", "sub_status_disposable", "sub_status_role_based",
+             "sub_status_possible_trap", "sub_status_global_suppression", "sub_status_timeout_exceeded",
+             "sub_status_mail_server_temporary_error", "sub_status_mail_server_did_not_respond",
+             "sub_status_greylisted", "sub_status_antispam_system", "sub_status_does_not_accept_mail",
+             "sub_status_exception_occurred", "sub_status_failed_syntax_check", "sub_status_mailbox_not_found",
+             "sub_status_unroutable_ip_address", "sub_status_possible_typo", "sub_status_no_dns_entries",
+             "sub_status_role_based_catch_all", "sub_status_accept_all", "sub_status_mailbox_quota_exceeded",
+             "sub_status_forcible_disconnect", "sub_status_failed_smtp_connection", "sub_status_mx_forward",
+             "sub_status_alternate", "sub_status_allowed", "sub_status_blocked", "sub_status_gold",
+             "sub_status_role_based_accept_all"}) {
+        usage += std::string(",\"") + name + "\":0";
+    }
+    usage += "}";
+    const std::vector<std::pair<std::string, std::string>> examples{
+        {"getCredits", R"({"Credits":"123456"})"},
+        {"getCredits", R"({"Credits":"-1"})"},
+        {"getApiUsage", usage},
+        {"getActivityData", R"({"found":true,"active_in_days":"180"})"},
+        {"getActivityData", R"({"found":false,"active_in_days":null})"},
+        {"validate", row},
+        {"validate", R"({"address":"invalid@example.com","status":"invalid","sub_status":"failed_syntax_check",)"
+                     R"("free_email":false,"did_you_mean":null,"account":"","domain":null,"domain_age_days":"",)"
+                     R"("smtp_provider":"","mx_found":"false","mx_record":null,"firstname":"","lastname":"",)"
+                     R"("gender":"","country":null,"region":null,"city":null,"zipcode":null,)"
+                     R"("processed_at":"2023-04-05 08:55:40.661"})"},
+        {"validate", R"({"Message":"Greylist validation still in progress. Please try again later."})"},
+        {"validate", R"({"address":"a@example.com","Message":"Greylisted email, we will retry"})"},
+        {"validateBatch", R"({"email_batch":[)" + row +
+                          R"(],"errors":[{"error":"Mock error message","email_address":"invalid@example.com"}]})"},
+        {"validateBatch", R"({"email_batch":[],"errors":[{"error":"Mock error message","email_address":"invalid@example.com"}]})"},
+        {"validateBatch", R"({"email_batch":[)" + row + R"(],"errors":[]})"},
+        {"sendFile", R"({"success":true,"message":"File Accepted","file_name":"emails2.txt",)"
+                     R"("file_id":"e90e9b1d-8dc7-40eb-a7d9-999d52086a56"})"},
+        {"fileStatus", R"({"success":true,"file_id":"e90e9b1d-8dc7-40eb-a7d9-999d52086a56","file_name":"emails2.txt",)"
+                       R"("upload_date":"2023-04-26T17:52:23Z","file_status":"Processing","complete_percentage":"100%",)"
+                       R"("error_reason":null,"return_url":"https://mock.value.com/"})"},
+        {"fileStatus", R"({"success":true,"file_id":"e90e9b1d-8dc7-40eb-a7d9-999d52086a56","file_name":"emails2.txt",)"
+                       R"("upload_date":"2023-04-26T17:52:23Z","file_status":"Deleted","complete_percentage":"0%",)"
+                       R"("error_reason":"mock value","return_url":null})"},
+        {"deleteFile", R"({"success":true,"message":"File Deleted","file_name":"emails2.txt",)"
+                       R"("file_id":"e90e9b1d-8dc7-40eb-a7d9-999d52086a56"})"},
+        {"findEmailByDomain 2", R"({"email":"john.doe@example.com","email_confidence":"high","domain":"",)"
+                                R"("company_name":"Internet Assigned Numbers Authority","did_you_mean":"","failure_reason":""})"},
+        {"findEmailByDomain 2", R"({"email":"","email_confidence":"undetermined","domain":"betheexample.org",)"
+                                R"("company_name":"Example Inc","did_you_mean":"","failure_reason":""})"},
+        {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"unknown","confidence":"undetermined",)"
+                                 R"("did_you_mean":"","failure_reason":"","other_domain_formats":[]})"},
+        {"searchDomainByDomain", R"({"domain":"example.com","company_name":"","format":"first.last","confidence":"high",)"
+                                 R"("did_you_mean":"","failure_reason":"","other_domain_formats":[{"format":"first_last",)"
+                                 R"("confidence":"high"},{"format":"first","confidence":"medium"}]})"},
+    };
+    EchoingApi api;
+    EchoingClient client(api, "documented");
+    const auto dir = freshTempDir("documented");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    for (const auto& [name, body] : examples) {
+        EXPECT_EQ(outcomeOf(callNamed(calls, name), api, body, path), 1) << name << " with " << body;
+    }
+    int credits = 0;
+    api.body = R"({"Credits":"123456"})";
+    client.getCredits([&](ZBCreditsResponse r) { credits = r.credits; }, [](ZBErrorResponse) {});
+    EXPECT_EQ(credits, 123456);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, ADeadKeyOn200IsAnErrorOnEveryCall) {
+    // E2: the three dead-key spellings the API answers with on an HTTP 200,
+    // over every public request method (the sendFile family of uploads, the
+    // S3/SFTP jobs, Inbox Placement and the raw-JSON calls included).
+    EchoingApi api;
+    EchoingClient client(api, "dead-key-sweep");
+    const auto dir = freshTempDir("dead-key-sweep");
+    const std::string path = (dir / "out.csv").string();
+    for (const std::string body : {R"({"error":"Invalid API key or your account ran out of credits"})",
+             R"({"error_message":"Invalid API key or your account ran out of credits"})",
+             R"({"Error":"Invalid API key or your account ran out of credits"})"}) {
+        for (const auto& call : everyPublicCall(client)) {
+            EXPECT_EQ(outcomeOf(call, api, body, path), -1) << call.name << " with " << body;
+            EXPECT_FALSE(std::filesystem::exists(path)) << call.name << " saved a file";
         }
     }
     std::filesystem::remove_all(dir);
