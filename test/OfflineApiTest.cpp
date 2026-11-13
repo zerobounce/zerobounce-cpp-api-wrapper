@@ -3698,16 +3698,11 @@ void collectPointers(const json& j, const json::json_pointer& at, std::vector<js
 
 }  // namespace
 
-TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
-    // Standard section 3: a value of another JSON type than the documented
-    // one, at any path of an example (a nested object, an array item, a batch
-    // row, a row's field), is an API error with status 200. null is taken only
-    // for an optional object field; an array item that is null is a wrong
-    // type too. Credits and a score also take a JSON integer, sendfile's
-    // message a list of strings. The examples are copied verbatim from
-    // zerobounce.net/docs where the site has a success example, and from the
-    // repo's fixtures for the other typed calls.
-    const std::vector<std::pair<std::string, std::string>> examples{
+namespace {
+
+// The documented answers of the typed calls, shared by the sweeps below.
+const std::vector<std::pair<std::string, std::string>>& documentedTypedExamples() {
+    static const std::vector<std::pair<std::string, std::string>> examples{
         {"getCredits", R"({"Credits":2375323})"},
         {"getCredits", R"({"Credits":"-1"})"},
         {"validate", "{\n      \"address\": \"john.doe@zerobounce.net\",\n      \"status\": \"valid\",\n"
@@ -3890,6 +3885,21 @@ TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
   })EX"},
         {"listS3files", R"([{"name":"emails.csv","size":1024,"last_modified":"2026-01-01T00:00:00Z"}])"},
     };
+    return examples;
+}
+
+}  // namespace
+
+TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
+    // Standard section 3: a value of another JSON type than the documented
+    // one, at any path of an example (a nested object, an array item, a batch
+    // row, a row's field), is an API error with status 200. null is taken only
+    // for an optional object field; an array item that is null is a wrong
+    // type too. Credits and a score also take a JSON integer, sendfile's
+    // message a list of strings. The examples are copied verbatim from
+    // zerobounce.net/docs where the site has a success example, and from the
+    // repo's fixtures for the other typed calls.
+    const auto& examples = documentedTypedExamples();
     const std::vector<json> replacements{nullptr, true, 5, 5.5, "x", json::array(), json::object()};
     // A file job's message is a string or a list of strings on every file job
     // answer (send, delete and file status, scoring and finder/domain included).
@@ -3937,6 +3947,69 @@ TEST(OfflineApi, EveryNestedValueOfAnExampleIsTypeChecked) {
     // 19 examples, about 600 substitutions when this was written.
     EXPECT_GE(checked, 500);
     std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AMissingNonRequiredFieldReadsAsEmpty) {
+    // Standard section 3: a missing optional field reads exactly like a null
+    // one, so each documented example with one non-required field left out, at
+    // any path of an object, is still an answer. Credits, validate's address
+    // and status, and a greylist answer's Message stay required.
+    EchoingApi api;
+    EchoingClient client(api, "missing-sweep");
+    const auto dir = freshTempDir("missing-sweep");
+    const std::string path = (dir / "out.csv").string();
+    const auto calls = everyPublicCall(client);
+    int checked = 0;
+    for (const auto& [name, body] : documentedTypedExamples()) {
+        const PublicCall& call = callNamed(calls, name);
+        const json root = json::parse(body);
+        const bool greylist = root.is_object() && root.contains("Message");
+        std::vector<json::json_pointer> pointers;
+        collectPointers(root, json::json_pointer(), pointers);
+        for (const auto& pointer : pointers) {
+            if (!root.at(pointer.parent_pointer()).is_object()) continue;
+            const std::string key = pointer.back();
+            const bool required = greylist ? key == "Message" : (key == "Credits" || key == "address" || key == "status");
+            if (required) continue;
+            json changed = root;
+            changed[pointer.parent_pointer()].erase(key);
+            ++checked;
+            EXPECT_EQ(outcomeOf(call, api, changed.dump(), path), 1)
+                << name << " without " << pointer.to_string() << ": " << changed.dump();
+        }
+    }
+    // About 150 optional fields across the examples when this was written.
+    EXPECT_GE(checked, 120);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, MissingValidateFieldsReadAsEmptyValues) {
+    // The values a missing optional field reads as: "" for a string, false for a
+    // boolean and no catch-all flag, the same as for null. Only address and
+    // status are needed in the answer.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "application/json";
+    api.body = R"({"address":"a@b.c","status":"valid"})";
+    bool succeeded = false;
+    ZBValidateResponse seen;
+    client.validate(
+        "a@b.c", "", ZBValidateOptions{},
+        [&](ZBValidateResponse response) {
+            succeeded = true;
+            seen = response;
+        },
+        [&](ZBErrorResponse error) { FAIL() << error.toString(); });
+    EXPECT_TRUE(succeeded);
+    EXPECT_EQ(seen.address, "a@b.c");
+    EXPECT_EQ(seen.account, "");
+    EXPECT_EQ(seen.domain, "");
+    EXPECT_EQ(seen.firstName, "");
+    EXPECT_EQ(seen.domainWebsiteExists, "");
+    EXPECT_EQ(seen.error, "");
+    EXPECT_FALSE(seen.freeEmail);
+    EXPECT_FALSE(seen.mxFound);
+    EXPECT_FALSE(seen.catchallDomain.has_value());
 }
 
 TEST(OfflineApi, ADeadKeyOn200IsAnErrorOnEveryCall) {
@@ -4004,6 +4077,39 @@ TEST(OfflineApi, FileJobMessageListIsJoinedWithNewlines) {
     // Another JSON type is an error with status 200.
     api.body = R"({"success":true,"message":5,"file_id":"fid"})";
     EXPECT_EQ(fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }).rfind("<error 200>", 0), 0u);
+}
+
+TEST(OfflineApi, FileJobMessageListWithANonStringItemIsAnError) {
+    // A file job's message list holds strings only: a number, a boolean, a
+    // null, an object or a nested list among its items is an error with
+    // status 200 on every file-job answer, not joined as its text.
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "application/json";
+    const std::vector<std::string> bodies = {
+        R"({"success":true,"message":[5],"file_id":"fid"})",
+        R"({"success":true,"message":["ok",5],"file_id":"fid"})",
+        R"({"success":false,"message":[true]})",
+        R"({"success":false,"message":["x",null]})",
+        R"({"success":false,"message":[{"a":1}]})",
+        R"({"success":false,"message":[["x"]]})",
+    };
+    for (const auto& body : bodies) {
+        api.body = body;
+        const std::string seen[] = {
+            fileJobMessage([&](auto s, auto e) { client.deleteFile("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.scoringDeleteFile("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.emailFinderDeleteFile("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.domainSearchDeleteFile("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.fileStatus("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.scoringFileStatus("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.emailFinderFileStatus("fid", s, e); }),
+            fileJobMessage([&](auto s, auto e) { client.domainSearchFileStatus("fid", s, e); }),
+        };
+        for (const auto& message : seen) {
+            EXPECT_EQ(message.rfind("<error 200>", 0), 0u) << body << " gave " << message;
+        }
+    }
 }
 
 TEST(OfflineApi, GetFileJsonErrorListKeepsEveryLine) {
