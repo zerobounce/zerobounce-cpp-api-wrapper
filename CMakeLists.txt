@@ -9,7 +9,7 @@ if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
 endif()
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-project(ZeroBounce VERSION 3.0.1 LANGUAGES CXX)
+project(ZeroBounce VERSION 4.0.0 LANGUAGES CXX)
 
 # True when this is the top-level project, false when another project pulls the
 # SDK in with FetchContent or add_subdirectory. PROJECT_IS_TOP_LEVEL needs CMake
