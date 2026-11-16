@@ -509,6 +509,20 @@ zb->domainSearchSFTPFile(sftp, ok, failed);
 zb->exportSFTPFile("<FILE_ID>", std::string("/exports"), ok, failed);
 ```
 
+## Timeouts and response field types
+
+`RequestHandler` (the default `BaseRequestHandler`) applies a total timeout of 120000 ms and a connect timeout of 30000 ms to every request. `RequestHandler::timeoutMs()` and `RequestHandler::connectTimeoutMs()` return the values a handler uses, and `RequestHandler(timeoutMs, connectTimeoutMs)` builds one with others.
+
+Field types are part of the response shape. A typed call whose response has a field of the wrong JSON type, or lacks a field the result needs, calls the error callback with the HTTP status. `getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError` (a `std::runtime_error`; `field()` names the field) instead of returning the default; `null` and a missing optional field still return it.
+
+## Warmup: managed accounts
+
+`ZeroBounceWarmup::addSendingAccount` takes `WarmupEmailContent` (`typesOfEmails`, `companyName`, `companyWebsite`, `companyDescription`, `exampleEmail`) and `WarmupManagedSending` (`warmupStartDate`, `weekdaysOnly`, `timezone`, `timezoneOffsetHours`) for a `zb_managed` account. They are sent as `company_website`, `company_description`, `example_email`, `weekdays_only`, `timezone` and `timezone_offset`.
+
+* `timezoneOffsetHours` (`std::optional<double>`) is hours from UTC, -11.0 to 14.0, with fractions such as 5.5 (India) or 5.75 (Nepal). A whole number is sent as an integer; a value outside the range, NaN or an infinity is rejected before anything is sent. It replaces the deprecated whole-hour `timezoneOffset`, which is ignored when both are set.
+* `timezone` is an IANA zone name such as `Asia/Kolkata`.
+* Deprecated and no longer sent: `industry`, `dailyLimit`. `website` is sent as `company_website` unless `companyWebsite` is set.
+
 ## Per-API base URLs
 
 The list evaluator and the Inbox Placement Tester have their own base URLs,

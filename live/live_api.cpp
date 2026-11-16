@@ -55,10 +55,19 @@ const std::string kUnknownId = "0d1b7a4e-1111-2222-3333-444455556666";
 const std::string kCallback = "https://example.com/zerobounce-sdk-live-test";
 const std::string kSandbox = "valid@example.com";
 
+/// How long the bulk delete is retried, and how often. See the delete check
+/// for the measurements behind the budget.
+constexpr int kDeleteBudgetSeconds = 720;
+constexpr int kDeletePollSeconds = 10;
+
 int passed = 0;
 int failed = 0;
 int skipped = 0;
 std::vector<std::string> failures;
+
+/// Bulk jobs this run uploaded but could not delete again. A live run must
+/// never leave one behind unannounced, so they are printed with the summary.
+std::vector<std::string> leaked;
 
 std::string env(const char* name) {
     const char* value = std::getenv(name);
@@ -426,7 +435,10 @@ void validationSpend() {
     });
 
     std::string fileId;
-    check("bulk validation round trip: upload, status, delete", [&]() -> std::string {
+    // The delete half of the round trip is the check below, which needs its own
+    // budget -- naming it here too is what sent a reader looking for a delete
+    // this body never performed.
+    check("bulk validation round trip: upload and status", [&]() -> std::string {
         const std::string path = "zb-sdk-live.csv";
         {
             std::ofstream out(path);
@@ -458,19 +470,49 @@ void validationSpend() {
         skip("the uploaded validation job is deleted again", "upload did not produce a file id");
     } else {
         check("the uploaded validation job is deleted again", [&]() -> std::string {
-            // LIVE: a just-accepted job answers "File cannot be found" for a
-            // short while, so the delete is retried rather than leaving it behind.
-            std::string last;
-            for (int attempt = 0; attempt < 12; ++attempt) {
+            // LIVE: a bulk job cannot be deleted until the API has finished
+            // processing it. Until then deletefile answers "File cannot be
+            // found." on an HTTP 200, which says nothing about the real state
+            // -- the job is there, filestatus returns it, it just is not
+            // deletable yet. The old fixed 12 x 10s window silently left paid
+            // jobs on the account whenever the queue was slow.
+            //
+            // Measured by uploading a two-row file and polling every 10s: it
+            // became deletable after 132s and 138s on a quiet queue, matching
+            // the 126-130s measured for the C# suite, against about 10 minutes
+            // on a busy one. The wait is queue time, so no window is
+            // guaranteed, and file_status is not a usable gate either -- the
+            // job reads "Processing", and can read "Complete", while the
+            // delete still refuses. The delete is therefore its own probe:
+            // tried once up front and again every kDeletePollSeconds, so an
+            // ordinary run costs the ~2 minutes the queue really takes rather
+            // than the whole budget. The budget is deliberately generous,
+            // because the alternative to waiting is leaving a job behind on
+            // the live account.
+            const auto deadline = std::chrono::steady_clock::now() +
+                std::chrono::seconds(kDeleteBudgetSeconds);
+            std::string last = "no response";
+            std::string state = "unknown";
+            while (true) {
                 bool done = false;
                 zb.deleteFile(fileId, [&](ZBDeleteFileResponse) { done = true; },
                     [&](ZBErrorResponse error) { last = redact(error.toString()); });
                 if (done) {
                     return "";
                 }
-                std::this_thread::sleep_for(std::chrono::seconds(10));
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    break;
+                }
+                zb.fileStatus(fileId, [&](ZBFileStatusResponse status) {
+                    state = status.fileStatus.empty() ? "unknown" : status.fileStatus;
+                }, [](ZBErrorResponse) {});
+                std::this_thread::sleep_for(std::chrono::seconds(kDeletePollSeconds));
             }
-            return "could not delete " + fileId + " after retrying: " + last;
+            // Never give up quietly: the job is still on the live account.
+            leaked.push_back(fileId);
+            return "could not delete " + fileId + " within " +
+                std::to_string(kDeleteBudgetSeconds) + "s (last file_status: " + state +
+                ", last error: " + last + ")";
         });
     }
 }
@@ -713,6 +755,14 @@ int main() {
         for (const auto& line : failures) {
             std::cout << "  - " << line << "\n";
         }
+    }
+    if (!leaked.empty()) {
+        std::cout << "\n!!! BULK JOBS LEFT ON THE LIVE ACCOUNT -- delete them by hand:\n";
+        for (const auto& id : leaked) {
+            std::cout << "  !!! file_id " << id << "\n";
+        }
+        std::cout << "      GET https://bulkapi.zerobounce.net/v2/deletefile"
+                     "?api_key=<key>&file_id=<id>\n";
     }
     return failed == 0 ? 0 : 1;
 }

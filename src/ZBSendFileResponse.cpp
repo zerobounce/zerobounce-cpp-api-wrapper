@@ -27,7 +27,7 @@ std::string ZBSendFileResponse::toString()
 ZBSendFileResponse ZBSendFileResponse::from_json(const json& j) {
     ZBSendFileResponse r;
 
-    r.success = getOrDefault<bool>(j, "success", false);
+    r.success = zbSuccessOf(j);
 
     if (j.contains("message") && j["message"].is_array()) {
         std::vector<std::string> messageArray = getOrDefault<std::vector<std::string>>(j, "message", {});

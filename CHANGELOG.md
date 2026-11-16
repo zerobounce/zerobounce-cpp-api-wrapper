@@ -1,17 +1,34 @@
 ## [Unreleased]
 
+### Upgrading
+
+This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of source may need a look:
+1. **Rebuild.** The shared library's `SOVERSION` is the major version, so it is `4` and the file is `libZeroBounce.so.4` (`libZeroBounce.4.dylib`). A binary linked against 3.0.x names the old soname and will not load this library. Rebuild every program that links it; a project that takes the SDK through `FetchContent` or `add_subdirectory` rebuilds with it.
+2. **`WarmupEmailContent` and `WarmupManagedSending` grew fields at the end** (`companyWebsite`, `companyDescription`, `exampleEmail`; `weekdaysOnly`, `timezone`, `timezoneOffsetHours`). Source written against 3.0.1 keeps compiling and positional initialisers keep their meaning, but the size of both structs changed, so code that embeds one must be rebuilt (see 1). `SendFileOptions` did not change.
+3. **`getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError`** when a present field has the wrong JSON type; it used to return the default. Only code that calls `getOrDefault` itself is affected: the SDK catches the exception and reports an error with the HTTP status.
+4. **The include guard of `utils.h` is `ZEROBOUNCE_UTILS_H`** (it was `UTILS_H`). Code that tested `UTILS_H` to detect the header must test the new name.
+5. **Some HTTP 2xx answers that reached the success callback are now errors** (see Fixed): a body that is only a message, `{}`, JSON of the wrong shape, a field of the wrong type, a body with a byte order mark or NUL, a `text/html` answer, a blank body, and a response cut short. An empty 2xx from `deleteInboxPlacementTest` is the one case that went the other way: it is now a success (`"{}"`). Check the error callback of every call whose success path you rely on.
+
 ### Breaking
 
-- `SendFileOptions`, `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs must be rebuilt. The shared library's `SOVERSION` is the major version (`3` while the project version is 3.0.1), so that rebuild links a different soname.
 - **Behaviour change:** `getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError` when a present field has the wrong JSON type. It used to return the default. `null` and a missing field still return the default.
+- `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs must be rebuilt. The shared library's `SOVERSION` is the major version (`4` for this release, `3` in 3.0.1), so that rebuild links a different soname and an old binary will not load the new library. `SendFileOptions` is unchanged from 3.0.1.
+- The include guard of `utils.h` is renamed from `UTILS_H` to `ZEROBOUNCE_UTILS_H`.
+- An HTTP 2xx answer that 3.0.1 handed to the success callback is now an error in the cases listed under Fixed (messages-only bodies, wrong JSON shape or field types, a leading byte order mark, `text/html`, blank bodies, truncated bodies).
 
 ### Added
 
+- `WarmupEmailContent::companyWebsite`, `companyDescription` and `exampleEmail`, and `WarmupManagedSending::weekdaysOnly` and `timezone` (an IANA zone name), sent as `company_website`, `company_description`, `example_email`, `weekdays_only` and `timezone` by `ZeroBounceWarmup::addSendingAccount`, all added at the end of their structs.
+- `ZBJsonFieldTypeError` (`utils.h`, derived from `std::runtime_error`, with `field()`), thrown by `getOrDefault` and `zbRequireString` for a missing or wrongly typed response field.
 - `WarmupManagedSending::timezoneOffsetHours` (`std::optional<double>`), added at the end of the struct: hours from UTC with fractional zones such as 5.5 (India) or 5.75 (Nepal), sent as `timezone_offset` in place of the deprecated `timezoneOffset` when both are set. A whole number is sent as an integer (`"timezone_offset":3`); a value outside -11.0 to 14.0, NaN or an infinity is rejected before anything is sent. Source written for 3.0.x keeps compiling.
 - `RequestHandler::timeoutMs()` and `RequestHandler::connectTimeoutMs()` report the timeouts a handler applies (120000 and 30000 by default).
+- `-DZB_SANITIZE=ON` CMake option: ASan and UBSan on the SDK and test targets only.
+- Wiping extended to every request that carries the key: the request URLs of `getCredits`, `getApiUsage`, `activity`, `scoreEmail`, `filestatus`, `deletefile` and the Email Finder / Domain Search calls (wiped in `sendRequest`, and the URL builders are wiped on destruction), the form bodies of `validate` (POST) and `scoreEmail`, the `api_key` part of the `sendFile` multipart, and the `API-Key` headers of every Warmup call. Not wiped: the `cpr::Parameters` of `getFile` (cpr offers no access to its copy of the key).
 
 ### Changed
 
+- The bundled nlohmann_json is 3.12.0 (was 3.11.2), which also removes the `-Wdeprecated-literal-operator` warnings a consumer saw from its header. googletest, used by the tests only, is 1.18.0 (was 1.13.0). libcpr stays at 1.11.2: 1.15.1 needs CMake 3.24, and the project supports 3.20.
+- The Dockerfile pins its Ubuntu base image by digest, and CI builds the image and runs the tests in it with `--network=none`. Build and test tooling only: no API change.
 - A project that pulls this SDK in with CMake `FetchContent` or `add_subdirectory` links the library only. googletest and the `ZeroBounceTests` target are built only when this repository is the top-level project.
 
 ### Deprecated
@@ -26,7 +43,6 @@
 ### Fixed
 
 - A file download whose JSON body has no message string, or whose body is not JSON on a JSON or `+json` content type, reported the raw body. It now says `ZeroBounce returned a JSON error instead of a file.` or `ZeroBounce returned a response that is not valid JSON.` `getFileJsonIndicatesError` returns true for a JSON list and for `{}`, and false for `{"success":true}` with no error or message key.
-
 - File downloads (`getFile`, `scoringGetFile`, `emailFinderGetFile`, `domainSearchGetFile` and their options forms, and `downloadSeeds` and `downloadStatistics`) treated an HTML page as the file when spaces, a byte-order mark or no-break spaces pushed `<html` past the first 2000 bytes, and they saved a JSON error the same way when a byte-order mark or a no-break space sat in front of `{` or `[`, or when the body was a JSON array or a content type ending in `+json`. Those bodies are errors with the HTTP status, the existing file is left in place, and the error text is the API's message. A body of only that padding is an error. A file that really begins with spaces is still saved unchanged, spaces included.
 - An HTTP 200 that is only a message (`message`, `Message`, `error`, `error_message`, `Error` or `detail`), or `{}`, or a message beside fields that are all null, reached the success callback on `sendFile`, `fileStatus`, `deleteFile`, `getActivityData`, `scoreEmail`, `getApiUsage`, `validateBatch` and the other typed calls. It is now an error with status 200. A file-status object with no non-null status field (`{"foo":1}`) is an error; `{"file_status":"Processing"}` stays the raw status. Validate's greylist answer `{"Message": "..."}` stays a result, as do `{"domain":null}` with no message, the filter calls, the Inbox Placement calls and the list-evaluator result.
 - JSON calls, the Inbox Placement calls included, reported a redirect as `Empty response from ZeroBounce (HTTP 307)`. They now say `ZeroBounce returned a redirect, which this client does not follow.` and keep the redirect's status. The redirect is not followed.
@@ -48,13 +64,19 @@
 - Every JSON call of `ZeroBounce` and `ZeroBounceWarmup` took a body with a UTF-8 byte order mark before the JSON (`\xEF\xBB\xBF{"a":1}`) or a NUL byte and text after it (`{"a":1}\0junk`) as the result: nlohmann's parser skips a leading BOM and stops at a NUL. A 2xx body must now be one strict RFC 8259 JSON value with only space, tab, CR or LF around it; anything else is an error with status 200.
 - Every typed call (`getCredits`, `validate`, `validateBatch`, `getApiUsage`, the bulk file calls, the S3 and SFTP jobs, `listS3files`, the email finder and domain search calls and the rest) took an HTTP 200 body that was valid JSON of the wrong shape, such as `0`, `"x"`, `true` or `null` (or an object where `listS3files` reads an array, and an array where the others read an object), as a result filled with defaults, or reported it as `ZeroBounce returned an unexpected JSON response.` with status 0. It is now an error with status 200; the raw-JSON calls still hand any JSON value over as it is. `ZeroBounce returned an unexpected JSON response.` (an object lacking the fields the result needs) now carries the HTTP status too.
 - `deleteInboxPlacementTest` and every Warmup JSON call took a 2xx body of only whitespace as the documented empty success. Only a zero-byte body (or HTTP 204) is; a blank body is not JSON, so it is now an error with its status.
+- **Behaviour change:** a "success" member now decides only when it is a real flag: a JSON boolean, the number 0 or 1 (0.0 and 1.0 too), or the string "true", "false", "0" or "1" in any case with whitespace around it. Any other value (null, "", "maybe", a list, an object, 2) is no flag and is not a result field either. Before, any "success" key switched the error-only and message-only rules off, so `{"error":"Invalid API key","success":null}` and `{"message":"m","success":null}` reached the success callback on getApiUsage, validateBatch, getActivityData, scoreEmail, findEmail and deleteFile (null). Now they are errors; a body whose only member is a non-flag "success" is the empty-object error.
+- **Behaviour change:** `{"success":0}` and `{"success":"0"}` (alone, beside an error, beside a message) are failures on typed calls and on listFilters; before only `false` and "false" were.
+- The file parsers (send, status, delete, getFile JSON) and ZBErrorResponse read "success" through the same reader (zbSuccessFlag / zbSuccessOf in utils.h): "TRUE " or 1 is true, and a non-flag value is false instead of throwing ZBJsonFieldTypeError.
+- fileStatus no longer counts "success" as a status field: `{"success":true}` alone is an error, as `{}` is.
+- **Behaviour change:** a base URL with a query (`?x=1`, a bare `?`), a fragment, a backslash, whitespace, a control or an invisible character (such as U+200B) was sent on. Every request path (bulk, bulk root, list evaluator, Inbox Placement, Warmup) now reports "request URL must not contain a query, a fragment, a backslash, whitespace or control characters" and sends nothing; the SDK's own escaped query still passes. `ZeroBounceWarmup::initialize` refuses such a base with the same text in `getInitializeError()`. Before, `?x=1` or a bare `?` was accepted. A base like `https://host/v2?email=a@b.c` is now refused.
+- **Behaviour change:** `RequestHandler(timeoutMs, connectTimeoutMs)` throws `std::invalid_argument` for 0 or a negative value (0 meant no timeout in libcurl).
+- A JSON error body of more than 1000 bytes with no message/error field is reported as "ZeroBounce returned an error with no message text." instead of the whole body.
 
 ### Security
 
 - A secret echoed as `\u{00000027}` or `\U{00000027}` (up to eight hex digits inside braces, when the value is a real code point) was readable. It is now masked, as `\u{27}` already was, for the API key, the Warmup key and the SMTP username and password.
 - `https://[]/v2` was accepted as a host. Empty brackets are refused, as `https://:443/v2` already was. `https://[::1]/v2` is still a host.
 - An API key containing a byte that is not valid UTF-8 was sent. It is now refused with `api_key has surrounding whitespace or control characters`.
-
 - An error body that echoed a secret containing `'` as `\u{27}`, `\U{27}`, `\U0027`, `\U00000027` or octal `\047` (and the same spellings percent-encoded) reached the callback with the character readable. Those spellings are now masked for the API key, the Warmup key and the SMTP username and password. `%u0027` is not treated as an encoding of that character.
 - A base URL with a username or password (`https://user:pass@host`, `https://@host`) was accepted, so the key was sent to the host after `@`. It is now refused before anything is sent, with `url must not contain a username or password` (`base_url must not contain a username or password` for Warmup). The URL is not included in the message. An `https://` URL with no host is refused as well.
 - An API key containing a Unicode space or an invisible character (no-break space, zero-width space, byte-order mark, bidirectional override, soft hyphen and the like) was sent. It is now refused with the existing message `api_key has surrounding whitespace or control characters`. A space in the middle of a key is still sent.
@@ -62,6 +84,11 @@
 - An error built from a response body could carry the API key: the main `ZeroBounce` client masked the key only in transport errors, so `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting the key, or a body quoting the request URL with `api_key=<key>` (URL-encoded) reached the error callback whole, on every call. Every error the client delivers now has the key, raw, URL-encoded and JSON-escaped (`"` and `\` escaped, `/` escaped or not, as a request body echoed back), replaced by `***`.
 - A Warmup call answered with an HTTP 200 body that is not JSON (a proxy's text, `Invalid API-Key <key>`) reported the body with the Warmup key in it, on every JSON call; for `testSmtpConfiguration` the SMTP username and password too. That error masked only the call's extra secrets, not the key. Every Warmup error now goes through one function that masks the key, raw and URL-encoded, together with the call's own secrets.
 - Key and SMTP-credential redaction covered only the spellings it generated (raw, URL-encoded, JSON-escaped and a few compositions), so a body quoting a secret through another composition, such as URL-encoded after JSON escaping and URL-encoding again, reached the error callback decodable. After masking, every error message is now decoded up to four more times (the SDK's own request encoding plus three layers an echo may add: URL-decoding with upper- or lower-case hex, `+` as a space, JSON-unescaping including `\/`, `\uXXXX` and surrogate pairs, in any order; a `%00` or `\u0000` does not end the search); if any view still holds the API key, the Warmup key or the SMTP username or password, the body-derived text is dropped for `The response body was omitted because it contained a credential.`
+- **Behaviour change:** redaction compares under Unicode full case folding. Before, an echo of the key or an SMTP credential in another case was not masked (`SECRETK3Y` for `secretk3y`; `PÄSSWÖRD-SSETA ÜSÉR` for `Pässwörd-ßeta` / `üsér`). Now the match is found in the folded text and masked in the original text, and decoded views are compared folded too. New `src/ZBCaseFold.cpp`, `src/ZBCaseFoldTable.inc` and `tools/gen_casefold.py` (Unicode 16.0.0, version-checked), ported from the C SDK.
+- Redaction decodes more spellings, up to four layers in any order: numeric HTML references (decimal or hex, any number of digits, `;` optional), `&apos;` in any case, `&quot; &amp; &lt; &gt;` and the Latin-1 named set, `\xHH` as a byte (so a UTF-8 secret spelled byte by byte), `\'` and a doubled `''`. The HTML `<title>` quoted in an error goes through the same masking.
+- **Behaviour change:** `api_key` validation also refuses U+034F, U+115F, U+1160, U+3164, U+FFA0, U+2800, U+FE00-FE0F, U+180B-180F, U+17B4/17B5 and U+E0000-E0FFF (same list as the C SDK); such a key is reported as "api_key has surrounding whitespace or control characters".
+- The API key (`ZeroBounce`, `ZeroBounceWarmup`) and the SMTP username/password in the Warmup request body are overwritten (volatile stores, then cleared) when replaced, on destruction, and for the temporary request strings of `validate`, `validateBatch` and `testSmtpConfiguration`. `ZeroBounce` and `ZeroBounceWarmup` gain a user-declared destructor (ABI change, part of 4.0.0).
+- libcurl is built with `CPR_CURL_NOSIGNAL` ON (CURLOPT_NOSIGNAL), so a timeout never raises a signal in a multi-threaded program.
 
 ## [3.0.1] - 2026-11-12
 
@@ -187,6 +214,12 @@
 
 - `ZBValidateResponse.catchallDomain`, read from `catchall_domain`.
 
+## [2.1.1] - 2026-04-18
+
+### Changed
+
+- No library changes: the release sets the version to 2.1.1 and pins the `github/codeql-action` workflow steps to 4.35.2.
+
 ## [2.1.0] - 2026-04-05
 
 ### Added
@@ -204,6 +237,60 @@
 ### Changed
 
 - License the project under MIT.
+
+## [2.0.9] - 2026-03-03
+
+### Added
+
+- The README gains a Publish section on distribution through vcpkg.
+
+## [2.0.8] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.8.
+
+## [2.0.7] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.7.
+
+## [2.0.6] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.6.
+
+## [2.0.5] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.5.
+
+## [2.0.4] - 2026-03-03
+
+### Changed
+
+- No library changes: the CI workflows declare explicit `permissions` and use `actions/checkout` v6.
+
+## [2.0.3] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.3.
+
+## [2.0.2] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.2.
+
+## [2.0.1] - 2026-03-03
+
+### Changed
+
+- No library changes: the release only sets the version to 2.0.1.
 
 ## [2.0.0] - 2026-03-03
 
@@ -239,9 +326,19 @@
 [2.2.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.2...v2.1.3
-[2.1.2]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.0...v2.1.2
+[2.1.2]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.10...v2.1.0
-[2.0.10]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.0...v2.0.10
+[2.0.10]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.9...v2.0.10
+[2.0.9]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.8...v2.0.9
+[2.0.8]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.7...v2.0.8
+[2.0.7]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.6...v2.0.7
+[2.0.6]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.5...v2.0.6
+[2.0.5]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.4...v2.0.5
+[2.0.4]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.3...v2.0.4
+[2.0.3]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.2...v2.0.3
+[2.0.2]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/releases/tag/v1.1.0

@@ -621,3 +621,131 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultTotalTimeout) {
 }
 
 #endif  // _WIN32
+
+// -- request URL hygiene, handler timeouts, download error text ---------------
+
+namespace {
+
+/** Counts every request and answers an empty 200 JSON object. */
+class CountingApi : public BaseRequestHandler {
+public:
+    int calls = 0;
+    long status = 200;
+    std::string body = "{}";
+
+protected:
+    cpr::Response reply() {
+        ++calls;
+        cpr::Response response;
+        response.status_code = status;
+        response.text = body;
+        response.header["Content-Type"] = "application/json";
+        return response;
+    }
+    cpr::Response doGet(const cpr::Url&) override { return reply(); }
+    cpr::Response doGet(const cpr::Url&, const cpr::Header&) override { return reply(); }
+    cpr::Response doGetWithParameters(const cpr::Url&, const cpr::Parameters&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doPost(const cpr::Url&, const cpr::Header&, const cpr::Multipart&) override { return reply(); }
+    cpr::Response doPut(const cpr::Url&, const cpr::Header&, const cpr::Body&) override { return reply(); }
+    cpr::Response doDelete(const cpr::Url&, const cpr::Header&) override { return reply(); }
+};
+
+class UrlClient : public ZeroBounce {
+public:
+    explicit UrlClient(CountingApi& api) {
+        initialize("url-test-key");
+        requestHandler = &api;
+    }
+};
+
+const char* const kDirtyUrlText =
+    "request URL must not contain a query, a fragment, a backslash, whitespace or control characters";
+
+std::vector<std::string> dirtyBases() {
+    return {"https://example.test?x=1", "https://example.test?", "https://example.test#frag",
+            "https://example.test\\path", "https://example.test/a b", "https://example.test/a\tb",
+            "https://example.test/a\nb", "https://example.test/a\xE2\x80\x8B" "b"};
+}
+
+}  // namespace
+
+TEST(TransportUrl, EveryBaseUrlPathRefusesADirtyUrlAndSendsNothing) {
+    for (const std::string& base : dirtyBases()) {
+        CountingApi api;
+        UrlClient client(api);
+        client.setBulkApiBaseUrl(base);
+        client.setBulkApiScoringBaseUrl(base);
+        client.setBulkApiRootUrl(base);
+        client.setListEvaluatorBaseUrl(base);
+        client.setInboxPlacementBaseUrl(base);
+        std::vector<std::string> errors;
+        auto onError = [&errors](ZBErrorResponse e) { errors.push_back(e.errors.empty() ? std::string() : e.errors[0]); };
+        auto onJson = [](const std::string&) {};
+        client.fileStatus("id", [](ZBFileStatusResponse) {}, onError);
+        client.getListEvaluatorResult("id", onJson, onError);
+        client.getInboxPlacementProviders(onJson, onError);
+        EmailFinderSendFileOptions finderOptions;
+        finderOptions.firstNameColumn = 2;
+        client.sendEmailFinderFile("email_file.csv", 1, &finderOptions, [](ZBSendFileResponse) {}, onError);
+        EXPECT_EQ(api.calls, 0) << base;
+        ASSERT_FALSE(errors.empty()) << base;
+        for (const auto& message : errors) {
+            EXPECT_EQ(message, kDirtyUrlText) << base;
+        }
+    }
+}
+
+TEST(TransportUrl, TheSdksOwnQueryStillPasses) {
+    CountingApi api;
+    UrlClient client(api);
+    client.setBulkApiBaseUrl("https://example.test/v2/");
+    int errors = 0;
+    client.fileStatus("a b&c", [](ZBFileStatusResponse) {}, [&errors](ZBErrorResponse) { ++errors; });
+    EXPECT_EQ(api.calls, 1);
+}
+
+TEST(TransportUrl, WarmupInitializeAndEverySendRefuseADirtyBase) {
+    for (const std::string& dirty : dirtyBases()) {
+        ZeroBounceWarmup warmup;
+        warmup.initialize("warmup-test-key", dirty);
+        EXPECT_FALSE(warmup.isReady()) << dirty;
+        EXPECT_EQ(warmup.getInitializeError(), kDirtyUrlText) << dirty;
+    }
+    ZeroBounceWarmup ok;
+    ok.initialize("warmup-test-key", "https://example.test/");
+    EXPECT_TRUE(ok.isReady());
+}
+
+TEST(TransportHandler, ATimeoutOfZeroOrLessIsRefused) {
+    EXPECT_THROW(RequestHandler(0, 1000), std::invalid_argument);
+    EXPECT_THROW(RequestHandler(1000, 0), std::invalid_argument);
+    EXPECT_THROW(RequestHandler(-1, 1000), std::invalid_argument);
+    EXPECT_THROW(RequestHandler(1000, -5), std::invalid_argument);
+    RequestHandler handler(1500, 700);
+    EXPECT_EQ(handler.timeoutMs(), 1500);
+    EXPECT_EQ(handler.connectTimeoutMs(), 700);
+}
+
+TEST(TransportHandler, LibcurlUsesNoSignals) {
+    // cpr sets CURLOPT_NOSIGNAL only when built with CPR_CURL_NOSIGNAL; the
+    // option is passed to the test target as a compile definition.
+#ifdef ZB_EXPECT_CURL_NOSIGNAL
+    SUCCEED();
+#else
+    FAIL() << "cpr was built without CPR_CURL_NOSIGNAL";
+#endif
+}
+
+TEST(TransportDownload, AJsonErrorBodyWithNoMessageIsNotReportedWhole) {
+    CountingApi api;
+    api.status = 500;
+    api.body = R"({"file_id":")" + std::string(1500, 'x') + R"("})";
+    UrlClient client(api);
+    std::vector<std::string> errors;
+    client.getFile("id", (std::filesystem::temp_directory_path() / "zb-transport-nomsg.csv").string(),
+        [](ZBGetFileResponse) {}, [&errors](ZBErrorResponse e) { errors = e.errors; });
+    ASSERT_EQ(errors.size(), 1u);
+    EXPECT_LT(errors[0].size(), 200u);
+    EXPECT_EQ(errors[0], "ZeroBounce returned an error with no message text.");
+}

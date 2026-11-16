@@ -19,7 +19,7 @@ std::string ZBDeleteFileResponse::toString()
 ZBDeleteFileResponse ZBDeleteFileResponse::from_json(const json& j) {
     ZBDeleteFileResponse r;
 
-    r.success = getOrDefault<bool>(j, "success", false);
+    r.success = zbSuccessOf(j);
     r.message = zbFileJobMessage(j);
     r.fileName = getOrDefault<std::string>(j, "file_name", "");
     r.fileId = getOrDefault<std::string>(j, "file_id", "");

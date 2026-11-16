@@ -185,3 +185,20 @@ jobs:
             echo "::error::A FetchContent consumer defines a test target."
             exit 1
           fi
+
+  # Builds the Dockerfile and runs the documented test run in it, so a broken image
+  # (a bad pin, a missing file) fails here and not in a contributor's hands. The image's
+  # CMD runs ctest; --network=none proves the offline tests need no network.
+  docker:
+    name: Docker test image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build -t zerobounce-cpp-test .
+
+      - name: Run the tests in the image
+        run: docker run --rm --network=none zerobounce-cpp-test

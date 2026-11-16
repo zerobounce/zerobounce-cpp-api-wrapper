@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -190,14 +191,27 @@ class RequestHandler : public BaseRequestHandler {
     public:
         RequestHandler() = default;
 
-        /** The same handler with other timeouts, in milliseconds. */
+        /**
+         * The same handler with other timeouts, in milliseconds. Both must be
+         * positive: 0 means no timeout in libcurl and a negative value is not a
+         * timeout. Throws std::invalid_argument otherwise.
+         */
         RequestHandler(std::int32_t timeoutMs, std::int32_t connectTimeoutMs)
-            : timeout(timeoutMs), connectTimeout(connectTimeoutMs) {}
+            : timeout(checkedTimeout(timeoutMs, "timeoutMs")),
+              connectTimeout(checkedTimeout(connectTimeoutMs, "connectTimeoutMs")) {}
 
         /** The total timeout of every request, in milliseconds (120000 by default). */
         std::int64_t timeoutMs() const { return static_cast<std::int64_t>(timeout.ms.count()); }
         /** The connect timeout of every request, in milliseconds (30000 by default). */
         std::int64_t connectTimeoutMs() const { return static_cast<std::int64_t>(connectTimeout.ms.count()); }
+
+    private:
+        static std::int32_t checkedTimeout(std::int32_t ms, const char* name) {
+            if (ms <= 0) {
+                throw std::invalid_argument(std::string(name) + " must be greater than 0");
+            }
+            return ms;
+        }
 
     protected:
         cpr::Response doGet(const cpr::Url& url) {
@@ -386,6 +400,8 @@ class ZeroBounce {
 
         ZeroBounce();
         ZeroBounce(const ZeroBounce& obj) = delete;
+        /** Wipes the API key from memory before the instance goes away. */
+        ~ZeroBounce();
 
         /**
          * Get pointer to ZeroBounce instance.

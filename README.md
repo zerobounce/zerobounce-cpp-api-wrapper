@@ -565,6 +565,26 @@ options.engagementRuleId = 0;
 warmup.addSendingAccount("sender@example.com", "self_managed", options, onSuccess, onError);
 ```
 
+For a ZeroBounce-managed account (`"zb_managed"`), describe the sender and when to send. The deprecated `industry`, `website` (use `companyWebsite`), `dailyLimit` and whole-hour `timezoneOffset` are still accepted; the first three are no longer sent, and `timezoneOffset` is ignored when `timezoneOffsetHours` is set:
+
+```cpp
+WarmupAddSendingAccountOptions managed;
+managed.emailContent = WarmupEmailContent{};
+managed.emailContent->typesOfEmails = {"transactional"};
+managed.emailContent->companyName = "Example Inc";
+managed.emailContent->companyWebsite = "https://example.com";   // company_website
+managed.emailContent->companyDescription = "Billing notices";   // company_description
+managed.emailContent->exampleEmail = "Your invoice is ready.";  // example_email
+managed.managedSending = WarmupManagedSending{};
+managed.managedSending->warmupStartDate = "2026-12-01";         // YYYY-MM-DD
+managed.managedSending->weekdaysOnly = true;                    // weekdays_only
+managed.managedSending->timezone = "Asia/Kolkata";              // IANA zone name
+managed.managedSending->timezoneOffsetHours = 5.5;              // -11.0 to 14.0, fractions allowed
+warmup.addSendingAccount("sender@example.com", "zb_managed", managed, onSuccess, onError);
+```
+
+`timezoneOffsetHours` is sent as `timezone_offset` (a whole number as an integer, `3`, not `3.0`); a value outside -11.0 to 14.0, NaN or an infinity is rejected before anything is sent.
+
 A custom engagement rule can be changed only once every seven days; inside that window the API answers 429.
 
 ```cpp
@@ -578,6 +598,14 @@ warmup.checkDomainDmarc("sender@example.com", std::nullopt, onSuccess, onError);
 ```
 
 Every documented empty success (204, or an empty 200) arrives as the JSON text `null`. Failures carry the HTTP status on `ZBErrorResponse::statusCode`. Nothing is stored by `testSmtpConfiguration`, and the credentials you pass it are masked out of any error it raises.
+
+## Timeouts
+
+`RequestHandler` applies a total timeout of 120000 ms and a connect timeout of 30000 ms to every request. `timeoutMs()` and `connectTimeoutMs()` report what a handler uses; `RequestHandler(timeoutMs, connectTimeoutMs)` builds one with other values.
+
+## Response field types
+
+A typed call treats the JSON type of each response field as part of the response shape. A field that is present with the wrong type (`"credits": 5.5`, a status that is not a string) is not defaulted: the call reports an error with the HTTP status, and `getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError`, whose `field()` names the field. `null` and a missing optional field still give the default.
 
 ## Live API suite
 

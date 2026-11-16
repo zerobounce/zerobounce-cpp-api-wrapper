@@ -66,10 +66,16 @@ ZeroBounceWarmup::ZeroBounceWarmup()
     root = std::string(DefaultBaseUrl) + BasePath;
 }
 
+ZeroBounceWarmup::~ZeroBounceWarmup() {
+    zbSecureWipe(apiKey);
+}
+
 void ZeroBounceWarmup::initialize(const std::string& key, const std::string& baseUrl) {
     ready = false;
     initializeError.clear();
-    apiKey = key;
+    std::string keyCopy = key;  // key may be apiKey itself
+    zbSecureWipe(apiKey);
+    apiKey = std::move(keyCopy);
     if (trimmed(key).empty()) {
         initializeError = "api_key is required";
         return;
@@ -100,6 +106,10 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
     }
     if (zbUrlHasEmptyHost(base)) {
         initializeError = "base_url must be an https:// URL";
+        return;
+    }
+    if (!zbBaseUrlIsClean(base)) {
+        initializeError = kZbDirtyUrlMessage;
         return;
     }
     while (!base.empty() && base.back() == '/') {
@@ -188,12 +198,33 @@ bool warmupSend(
     WarmupResult& out,
     const OnErrorCallback& errorCallback
 ) {
-    const cpr::Header jsonHeader{
+    cpr::Header jsonHeader{
         {"Accept", "application/json"},
         {"Content-Type", "application/json"},
         {"API-Key", zb->getApiKey()}
     };
-    const cpr::Header plainHeader{{"Accept", "application/json"}, {"API-Key", zb->getApiKey()}};
+    cpr::Header plainHeader{{"Accept", "application/json"}, {"API-Key", zb->getApiKey()}};
+    // The headers hold copies of the key: overwrite them on every way out.
+    struct WipeHeaders {
+        cpr::Header& a;
+        cpr::Header& b;
+        ~WipeHeaders() {
+            for (cpr::Header* header : {&a, &b}) {
+                for (auto& entry : *header) {
+                    if (entry.first == "API-Key") {
+                        zbSecureWipe(entry.second);
+                    }
+                }
+            }
+        }
+    } wipeHeaders{jsonHeader, plainHeader};
+
+    // Every path checks the URL at send time, not only initialize().
+    if (!zbCheckRequestUrl(url, [&](ZBErrorResponse error) {
+            if (errorCallback) errorCallback(std::move(error));
+        })) {
+        return false;
+    }
 
     cpr::Response response;
     try {
@@ -757,7 +788,18 @@ void ZeroBounceWarmup::testSmtpConfiguration(
     body["password"] = password;
     body["server"] = server;
     body["port"] = port;
-    const std::string payload = body.dump();
+    std::string payload = body.dump();
+    ZbWipeGuard wipePayload(payload);
+    // The JSON object holds its own copies of the SMTP credentials.
+    struct WipeJsonCredentials {
+        json& body;
+        ~WipeJsonCredentials() {
+            for (const char* key : {"username", "password"}) {
+                std::string& value = body[key].get_ref<std::string&>();
+                zbSecureWipe(value);
+            }
+        }
+    } wipeBody{body};
     warmupJson(this, "POST", root + "/test-smtp-configuration", &payload,
                {password, username}, ok, err);
 }

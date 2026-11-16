@@ -22,6 +22,10 @@
 
 #include "ZeroBounce/ZeroBounce.h"
 #include "ZeroBounce/ZeroBounceWarmup.h"
+#ifndef _WIN32
+#include "../src/HttpError.h"
+#endif
+#include "ZeroBounce/utils.h"
 
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -4660,10 +4664,10 @@ TEST(OfflineApi, ABaseUrlWithUserinfoOrNoHostSendsNothing) {
         EXPECT_EQ(api.size(), 1u) << url;
     }
     api.clear();
-    // An '@' in the query is not userinfo.
+    // A query in the base is refused (it is not userinfo, but it is not a base either).
     client.setBulkApiBaseUrl("https://bulk.example/v2?email=a@b.c");
     client.fileStatus("f", [](ZBFileStatusResponse) {}, [](ZBErrorResponse) {});
-    EXPECT_EQ(api.size(), 1u);
+    EXPECT_EQ(api.size(), 0u);
     // Warmup refuses an empty host at initialize.
     for (const char* url : {"https://:443/v2", "https://[]/v2"}) {
         ZeroBounceWarmup empty;
@@ -4762,4 +4766,284 @@ TEST(OfflineApi, AJsonCallReportsARedirectAndAMissingErrorCallbackDoesNotThrow) 
     ZBValidateError item;
     item.error = "e";
     EXPECT_EQ(item.toString().rfind("ZBValidateError{", 0), 0u);
+}
+
+// Fixer B: the key echoed in a spelling the first forms miss.
+namespace {
+std::string maskedErrorFor(const std::string& key, const std::string& echoJsonString, const char* field = "error") {
+    ScriptedApi api;
+    api.contentType = "application/json";
+    api.body = std::string("{\"") + field + "\":\"bad key " + echoJsonString + "\"}";
+    KeyedScriptedClient client(api, key);
+    std::string message;
+    client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); },
+        [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+    return message;
+}
+}  // namespace
+
+TEST(OfflineApi, AKeyEchoedInAnotherCaseIsMasked) {
+    // Lesson 86: compared under Unicode full case folding, not byte-for-byte.
+    const std::string uppercased = maskedErrorFor("secretk3y", "SECRETK3Y end");
+    EXPECT_EQ(uppercased.find("SECRETK3Y"), std::string::npos) << uppercased;
+    const std::string accented = maskedErrorFor("P\xC3\xA4ssw\xC3\xB6rd-\xC3\x9F" "eta",
+                                                "P\xC3\x84SSW\xC3\x96RD-SSETA end");
+    EXPECT_EQ(accented.find("SSETA"), std::string::npos) << accented;
+    EXPECT_EQ(accented.find("RD-"), std::string::npos) << accented;
+#ifndef _WIN32
+    // The match is masked in the ORIGINAL text although the folded lengths differ.
+    EXPECT_EQ(zbMaskSecret("x P\xC3\x84SSW\xC3\x96RD-SSETA y", "P\xC3\xA4ssw\xC3\xB6rd-\xC3\x9F" "eta"), "x *** y");
+    EXPECT_EQ(zbMaskSecret("x SECRETK3Y y", "secretk3y"), "x *** y");
+    EXPECT_EQ(zbMaskSecret("a STRASSE b", "Stra\xC3\x9F" "e"), "a *** b");
+#endif
+}
+
+TEST(OfflineApi, AKeyEchoedAsHtmlEntitiesOrHexEscapesIsMasked) {
+    const std::string key = "ab'cd";
+    for (const char* echo : {"ab&#39;cd", "ab&#x27;cd", "ab&#0000039;cd", "ab&#39cd", "ab&apos;cd", "ab&APOS;cd",
+                             "ab\\x27cd", "ab\\'cd", "ab&#x0000027;cd", "ab%26%2339%3Bcd", "ab&#37;27cd" }) {
+        std::string escaped;
+        for (const char* c = echo; *c; ++c) {
+            escaped += *c;
+            if (*c == '\\') {
+                escaped += '\\';
+            }
+        }
+        const std::string message = maskedErrorFor(key, escaped);
+        EXPECT_EQ(message.find("ab"), std::string::npos) << echo << " -> " << message;
+    }
+    // A UTF-8 secret spelled byte by byte with \xHH, and with named entities.
+    const std::string accented = maskedErrorFor("caf\xC3\xA9s", "caf\\\\xC3\\\\xA9s");
+    EXPECT_EQ(accented.find("caf"), std::string::npos) << accented;
+    const std::string named = maskedErrorFor("caf\xC3\xA9s", "caf&eacute;s");
+    EXPECT_EQ(named.find("caf"), std::string::npos) << named;
+    const std::string amp = maskedErrorFor("a&b<c", "a&amp;b&lt;c");
+    EXPECT_EQ(amp.find("a&"), std::string::npos) << amp;
+}
+
+TEST(OfflineApi, AKeyInAnHtmlTitleSpelledAsEntitiesIsMasked) {
+    ScriptedApi api;
+    api.status = 502;
+    api.contentType = "text/html";
+    api.body = "<html><head><title>Bad key &#83;ECRET&#x4B;3Y here</title></head></html>";
+    KeyedScriptedClient client(api, "secretk3y");
+    std::string message;
+    client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); },
+        [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+    EXPECT_FALSE(message.empty());
+    EXPECT_EQ(message.find("ECRET"), std::string::npos) << message;
+    EXPECT_EQ(message.find("ecret"), std::string::npos) << message;
+}
+
+TEST(OfflineApi, AKeyWithAnInvisibleFillerOrSelectorIsRefused) {
+    // Lesson 82: one character of each range the C SDK and Rust refuse.
+    for (const char* bad : {"ab\xCD\x8F" "cd",          // U+034F combining grapheme joiner
+                            "ab\xE1\x85\x9F" "cd",      // U+115F
+                            "ab\xE1\x85\xA0" "cd",      // U+1160
+                            "ab\xE3\x85\xA4" "cd",      // U+3164
+                            "ab\xEF\xBE\xA0" "cd",      // U+FFA0
+                            "ab\xE2\xA0\x80" "cd",      // U+2800
+                            "ab\xEF\xB8\x8F" "cd",      // U+FE0F
+                            "ab\xEF\xB8\x80" "cd",      // U+FE00
+                            "ab\xE1\xA0\x8B" "cd",      // U+180B
+                            "ab\xE1\xA0\x8F" "cd",      // U+180F
+                            "ab\xE1\x9E\xB4" "cd",      // U+17B4
+                            "ab\xE1\x9E\xB5" "cd",      // U+17B5
+                            "ab\xF3\xA0\x84\x80" "cd",  // U+E0100
+                            "ab\xF3\xA0\x87\xAF" "cd",  // U+E01EF
+                            "ab\xF3\xA0\x80\x80" "cd",  // U+E0000
+                            "ab\xF3\xA0\x9F\xBF" "cd"}) {  // U+E0FFF
+        FakeApi api;
+        OfflineClient client(api, bad);
+        std::string message;
+        client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); },
+            [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+        EXPECT_EQ(message, "api_key has surrounding whitespace or control characters") << bad;
+        EXPECT_EQ(api.size(), 0u) << bad;
+    }
+}
+
+#ifndef _WIN32
+TEST(OfflineApi, SecureWipeOverwritesTheBufferAndClearsTheString) {
+    std::string secret(64, 'k');
+    const char* data = secret.data();
+    zbSecureWipe(secret);
+    EXPECT_TRUE(secret.empty());
+    // clear() keeps the buffer, so the bytes can be looked at: none is left.
+    for (size_t i = 0; i < 64; ++i) {
+        EXPECT_EQ(data[i], '\0') << i;
+    }
+    {
+        std::string guarded(64, 'z');
+        const char* guardedData = guarded.data();
+        {
+            ZbWipeGuard guard(guarded);
+        }
+        EXPECT_TRUE(guarded.empty());
+        EXPECT_EQ(guardedData[0], '\0');
+        EXPECT_EQ(guardedData[63], '\0');
+    }
+}
+#endif
+// ---- "success" reads as a flag only when it is one (lesson 106) -----------
+
+namespace {
+
+struct FlagTally {
+    int successes = 0;
+    int errors = 0;
+};
+
+// Every typed call against one scripted answer. withValidate / withRaw leave
+// out validate (a bare message is a result there) and listFilters (a raw JSON
+// call keeps any object) for the bodies those two accept.
+FlagTally runEveryTypedCall(ScriptedApi& api, bool withValidate, bool withRaw) {
+    ScriptedClient client(api);
+    FlagTally tally;
+    auto bad = [&](ZBErrorResponse) { ++tally.errors; };
+    std::tm start{};
+    start.tm_year = 118;
+    start.tm_mday = 1;
+    std::tm end = start;
+    end.tm_mday = 31;
+    client.getCredits([&](ZBCreditsResponse) { ++tally.successes; }, bad);
+    client.getApiUsage(start, end, [&](ZBGetApiUsageResponse) { ++tally.successes; }, bad);
+    client.validateBatch({{"a@example.com"}}, [&](ZBValidateBatchResponse) { ++tally.successes; }, bad);
+    client.getActivityData("a@example.com", [&](ZBActivityDataResponse) { ++tally.successes; }, bad);
+    client.scoreEmail("a@example.com", [&](ZBScoreEmailResponse) { ++tally.successes; }, bad);
+    client.scoreEmailPost("a@example.com", [&](ZBScoreEmailResponse) { ++tally.successes; }, bad);
+    client.findEmailByDomain("example.com", "Ada", [&](ZBFindEmailResponse) { ++tally.successes; }, bad);
+    client.fileStatus("fid", [&](ZBFileStatusResponse) { ++tally.successes; }, bad);
+    client.deleteFile("fid", [&](ZBDeleteFileResponse) { ++tally.successes; }, bad);
+    if (withValidate) {
+        client.validate("a@example.com", "", [&](ZBValidateResponse) { ++tally.successes; }, bad);
+    }
+    if (withRaw) {
+        client.listFilters(false, [&](std::string) { ++tally.successes; }, bad);
+    }
+    return tally;
+}
+
+}  // namespace
+
+TEST(OfflineApi, ASuccessMemberThatIsNoFlagDoesNotSwitchTheErrorRulesOff) {
+    ScriptedApi api;
+    api.contentType = "application/json";
+    for (long status : {200L, 202L}) {
+        api.status = status;
+        for (const char* value : {"null", "\"\"", "\"maybe\"", "[]", "{}", "2", "-1", "0.5", "\" \""}) {
+            for (const char* key : {"error", "Error", "error_message"}) {
+                api.body = std::string("{\"") + key + "\":\"Invalid API key\",\"success\":" + value + "}";
+                auto tally = runEveryTypedCall(api, true, true);
+                EXPECT_EQ(tally.successes, 0) << api.body << " " << status;
+                EXPECT_EQ(tally.errors, 11) << api.body << " " << status;
+            }
+            // A message beside nulls, and a body that is only the non-flag.
+            for (std::string body : {std::string("{\"message\":\"m\",\"success\":") + value + "}",
+                                     std::string("{\"message\":\"m\",\"domain\":null,\"success\":") + value + "}",
+                                     std::string("{\"detail\":\"m\",\"success\":") + value + "}"}) {
+                api.body = body;
+                auto tally = runEveryTypedCall(api, false, false);
+                EXPECT_EQ(tally.successes, 0) << body << " " << status;
+                EXPECT_EQ(tally.errors, 9) << body << " " << status;
+            }
+            api.body = std::string("{\"success\":") + value + "}";
+            auto tally = runEveryTypedCall(api, true, false);
+            EXPECT_EQ(tally.successes, 0) << api.body << " " << status;
+            EXPECT_EQ(tally.errors, 10) << api.body << " " << status;
+        }
+    }
+}
+
+TEST(OfflineApi, AFalseFlagInEverySpellingIsAFailureOnEveryCall) {
+    ScriptedApi api;
+    api.contentType = "application/json";
+    for (long status : {200L, 202L}) {
+        api.status = status;
+        for (const char* value : {"false", "0", "0.0", "\"false\"", "\" false \"", "\"FALSE\"", "\"False\"", "\"0\"",
+                                  "\"\\t0\\n\"", "0e0"}) {
+            for (std::string body : {std::string("{\"success\":") + value + "}",
+                                     std::string("{\"success\":") + value + ",\"message\":\"nope\"}",
+                                     std::string("{\"success\":") + value + ",\"error\":\"nope\"}",
+                                     std::string("{\"success\":") + value + ",\"credits\":5,\"file_id\":\"x\"}"}) {
+                api.body = body;
+                auto tally = runEveryTypedCall(api, true, true);
+                EXPECT_EQ(tally.successes, 0) << body << " " << status;
+                EXPECT_EQ(tally.errors, 11) << body << " " << status;
+            }
+        }
+    }
+}
+
+TEST(OfflineApi, EveryTrueFlagSpellingReadsAsTrueOnTheFileParsers) {
+    ScriptedApi api;
+    api.contentType = "application/json";
+    ScriptedClient client(api);
+    for (const char* value : {"true", "1", "1.0", "\"true\"", "\" true \"", "\"TRUE \"", "\"True\"", "\"1\"", "\" 1\""}) {
+        api.body = std::string("{\"success\":") + value + ",\"file_id\":\"x\",\"message\":\"ok\"}";
+        int seen = 0;
+        client.fileStatus("fid", [&](ZBFileStatusResponse r) { ++seen; EXPECT_TRUE(r.success) << value; },
+                          [&](ZBErrorResponse e) { ADD_FAILURE() << value << e.toString(); });
+        client.deleteFile("fid", [&](ZBDeleteFileResponse r) { ++seen; EXPECT_TRUE(r.success) << value; },
+                          [&](ZBErrorResponse e) { ADD_FAILURE() << value << e.toString(); });
+        EXPECT_EQ(seen, 2) << value;
+    }
+    // null is an absent flag (a result whose success is false); any other
+    // non-flag beside a real field is a wrong-typed field, an API error.
+    api.body = R"({"success":null,"file_id":"x"})";
+    int seen = 0;
+    client.fileStatus("fid", [&](ZBFileStatusResponse r) { ++seen; EXPECT_FALSE(r.success); },
+                      [&](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(seen, 1);
+    for (const char* value : {"2", "\"maybe\"", "[]", "\"yes\"", "{}"}) {
+        api.body = std::string("{\"success\":") + value + ",\"file_id\":\"x\"}";
+        int errors = 0;
+        client.fileStatus("fid", [&](ZBFileStatusResponse) { ADD_FAILURE() << value; },
+                          [&](ZBErrorResponse) { ++errors; });
+        client.deleteFile("fid", [&](ZBDeleteFileResponse) { ADD_FAILURE() << value; },
+                          [&](ZBErrorResponse) { ++errors; });
+        EXPECT_EQ(errors, 2) << value;
+    }
+}
+
+TEST(OfflineApi, ASuccessFlagAloneIsNotAFileStatus) {
+    ScriptedApi api;
+    api.contentType = "application/json";
+    ScriptedClient client(api);
+    for (const char* body : {R"({"success":true})", R"({"success":1})", R"({"success":"true","file_id":null})",
+                             R"({"success":"maybe","file_id":null})"}) {
+        api.body = body;
+        int errors = 0;
+        client.fileStatus("fid", [&](ZBFileStatusResponse) { ADD_FAILURE() << body; },
+                          [&](ZBErrorResponse) { ++errors; });
+        EXPECT_EQ(errors, 1) << body;
+    }
+    api.body = R"({"success":true,"file_id":"x"})";
+    int seen = 0;
+    client.fileStatus("fid", [&](ZBFileStatusResponse) { ++seen; }, [&](ZBErrorResponse) { ADD_FAILURE(); });
+    EXPECT_EQ(seen, 1);
+}
+
+TEST(OfflineApi, TheSharedFlagReaderDecidesEachSpelling) {
+    struct Case { const char* text; int flag; };
+    const Case cases[] = {
+        {"true", 1}, {"false", 0}, {"1", 1}, {"0", 0}, {"1.0", 1}, {"0.0", 0}, {"2", -1}, {"-1", -1}, {"0.5", -1},
+        {"\"true\"", 1}, {"\" true \"", 1}, {"\"TRUE \"", 1}, {"\"True\"", 1}, {"\"1\"", 1}, {"\" 1 \"", 1},
+        {"\"false\"", 0}, {"\" false \"", 0}, {"\"FALSE\"", 0}, {"\"0\"", 0}, {"\"\\t0\\r\\n\"", 0},
+        {"\"\"", -1}, {"\" \"", -1}, {"\"maybe\"", -1}, {"\"yes\"", -1}, {"\"2\"", -1}, {"\"truee\"", -1},
+        {"null", -1}, {"[]", -1}, {"{}", -1}, {"[true]", -1},
+    };
+    for (const auto& c : cases) {
+        EXPECT_EQ(zbSuccessFlag(json::parse(c.text)), c.flag) << c.text;
+    }
+}
+
+TEST(OfflineApi, ADownloadBodyWithAFalseOrNonFlagSuccessIsAnError) {
+    for (const char* body : {R"({"success":0})", R"({"success":"0"})", R"({"success":" FALSE "})", R"({"success":0.0})",
+                             R"({"success":null})", R"({"success":"maybe"})", R"({"success":[]})", R"({"success":2})"}) {
+        EXPECT_TRUE(ZeroBounce::getFileJsonIndicatesError(body)) << body;
+    }
+    for (const char* body : {R"({"success":true})", R"({"success":1})", R"({"success":"TRUE "})"}) {
+        EXPECT_FALSE(ZeroBounce::getFileJsonIndicatesError(body)) << body;
+    }
 }

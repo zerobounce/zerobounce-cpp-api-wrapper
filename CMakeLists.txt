@@ -79,21 +79,29 @@ endif()
 # Download and build libcpr. GIT_TAG is the commit tag 1.11.2 points to
 # (git ls-remote https://github.com/libcpr/cpr.git refs/tags/1.11.2), so a moved
 # tag cannot change what is built.
+# cpr stays at 1.11.2: 1.15.1 needs CMake 3.24 and the project supports 3.20, and it
+# builds libpsl with meson unless CPR_CURL_USE_LIBPSL is turned off.
 FetchContent_Declare(
     cpr
     GIT_REPOSITORY https://github.com/libcpr/cpr.git
     GIT_TAG dd967cb48ea6bcbad9f1da5ada0db8ac0d532c06 # 1.11.2
 )
-# Download and build nlohmann_json. The hash is the SHA-256 the v3.11.2
+# Download and build nlohmann_json. The hash is the SHA-256 the v3.12.0
 # release notes publish for json.tar.xz.
 FetchContent_Declare(
     nlohmann_json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
-    URL_HASH SHA256=8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+    URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
 )
+
+# libcurl must not use signals: with the default timeout handling it can call
+# alarm()/SIGALRM from a thread, which is unsafe in a multi-threaded program.
+set(CPR_CURL_NOSIGNAL ON CACHE BOOL "Disable use of signals in libcurl" FORCE)
 
 FetchContent_MakeAvailable(cpr nlohmann_json)
 
+# src/*.cpp includes ZBCaseFold.cpp, which includes the generated
+# ZBCaseFoldTable.inc (tools/gen_casefold.py).
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 # The shared library's file name carries the project version, and SOVERSION is the
@@ -108,16 +116,25 @@ target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 
 target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr nlohmann_json::nlohmann_json)
 
+# -DZB_SANITIZE=ON builds the SDK and its tests (not curl or the other fetched
+# dependencies, whose configure steps break with sanitizer flags) with
+# AddressSanitizer and UndefinedBehaviorSanitizer.
+option(ZB_SANITIZE "Build the SDK and tests with ASan and UBSan" OFF)
+if(ZB_SANITIZE AND NOT MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${PROJECT_NAME} PUBLIC -fsanitize=address,undefined)
+endif()
+
 # googletest and the unit tests are only for building this repository. A project
 # that pulls the SDK in gets the library, not googletest or the ZeroBounceTests
-# target. GIT_TAG is the commit tag v1.13.0 points to
+# target. GIT_TAG is the commit tag v1.18.0 points to
 # (git ls-remote https://github.com/google/googletest.git refs/tags/v1.13.0).
 if(ZEROBOUNCE_IS_TOP_LEVEL)
     set(INSTALL_GTEST OFF CACHE BOOL "Install googletest with the SDK")
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG b796f7d44681514f58a683a3a71ff17c94edb0c1 # v1.13.0
+        GIT_TAG 063de7e9578f82b369302001269680b4b1553359 # v1.18.0
     )
     FetchContent_MakeAvailable(googletest)
 
@@ -128,7 +145,13 @@ if(ZEROBOUNCE_IS_TOP_LEVEL)
         ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
         ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
         ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
+    if(CPR_CURL_NOSIGNAL)
+        target_compile_definitions(ZeroBounceTests PRIVATE ZB_EXPECT_CURL_NOSIGNAL=1)
+    endif()
     target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
+    if(ZB_SANITIZE AND NOT MSVC)
+        target_compile_options(ZeroBounceTests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endif()
     include(GoogleTest)
     gtest_add_tests(TARGET ZeroBounceTests)
 endif()

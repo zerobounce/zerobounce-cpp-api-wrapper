@@ -1335,3 +1335,44 @@ TEST(OfflineWarmup, ADeeplyNestedBodyIsAnErrorOnEveryCall) {
         api.take();
     }
 }
+
+TEST(OfflineWarmup, TheSmtpPasswordEchoedInAnotherCaseOrSpellingIsMasked) {
+    struct Case {
+        std::string password;
+        std::string echo;
+        std::string leak;
+    };
+    const std::vector<Case> cases = {
+        {"P\xC3\xA4ssw\xC3\xB6rd-\xC3\x9F" "eta", "P\xC3\x84SSW\xC3\x96RD-SSETA", "SSETA"},
+        {"\xC3\xBCs\xC3\xA9r", "\xC3\x9CS\xC3\x89R", "S\xC3\x89R"},
+        {"secretk3y", "SECRETK3Y", "SECRETK3Y"},
+        {"ab'cd", "ab&#39;cd", "ab"},
+        {"ab'cd", "ab&APOS;cd", "ab"},
+        {"caf\xC3\xA9s", "caf\\xC3\\xA9s", "caf"},
+    };
+    for (const auto& c : cases) {
+        FakeWarmupApi api;
+        OfflineWarmupClient client(api);
+        api.replyWith(500, "text/plain", "SMTP login failed: [" + c.echo + "] end");
+        bool rejected = false;
+        client.testSmtpConfiguration("a@b.com", "smtp-user", c.password, "smtp.example.com", 587,
+            [](std::string) { FAIL() << "success"; },
+            [&](ZBErrorResponse error) {
+                rejected = true;
+                const std::string message = error.toString();
+                EXPECT_EQ(message.find(c.leak), std::string::npos) << c.echo << " -> " << message;
+            });
+        EXPECT_TRUE(rejected) << c.echo;
+    }
+}
+
+TEST(OfflineWarmup, ReinitializingWithTheStoredKeyKeepsIt) {
+    // The key is wiped before it is replaced; the key handed back by getApiKey
+    // is the stored one itself, and must survive being passed in again.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    const std::string key = client.getApiKey();
+    ASSERT_FALSE(key.empty());
+    client.initialize(client.getApiKey());
+    EXPECT_EQ(client.getApiKey(), key);
+}

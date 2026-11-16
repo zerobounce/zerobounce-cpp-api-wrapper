@@ -25,9 +25,39 @@ static std::string urlEncode(const std::string& value) {
     return result;
 }
 
+namespace {
+
+// A request URL under construction. It holds the API key, so its buffer is
+// overwritten when it goes out of scope.
+class ZbSecretUrl {
+public:
+    ZbSecretUrl() = default;
+    ZbSecretUrl(const ZbSecretUrl&) = delete;
+    ZbSecretUrl& operator=(const ZbSecretUrl&) = delete;
+    ~ZbSecretUrl() { zbSecureWipe(text_); }
+    ZbSecretUrl& operator<<(const std::string& part) {
+        text_ += part;
+        return *this;
+    }
+    ZbSecretUrl& operator<<(const char* part) {
+        text_ += part;
+        return *this;
+    }
+    std::string str() const { return text_; }
+
+private:
+    std::string text_;
+};
+
+}  // namespace
+
 ZeroBounce::ZeroBounce() {
     defaultRequestHandler = std::make_unique<RequestHandler>();
     requestHandler = defaultRequestHandler.get();
+}
+
+ZeroBounce::~ZeroBounce() {
+    zbSecureWipe(apiKey);
 }
 
 ZeroBounce* ZeroBounce::getInstance() {
@@ -39,14 +69,16 @@ void ZeroBounce::initialize(std::string apiKey) {
     // A key with surrounding whitespace or control characters is kept, not
     // dropped in favour of an earlier one, and every call then reports it
     // without sending anything.
-    this->apiKey = apiKey;
+    zbSecureWipe(this->apiKey);
+    this->apiKey = std::move(apiKey);
 }
 
 void ZeroBounce::initialize(
     std::string apiKey,
     ZBApiURL apiBaseUrl
 ) {
-    this->apiKey = apiKey;
+    zbSecureWipe(this->apiKey);
+    this->apiKey = std::move(apiKey);
     this->apiBaseUrl = baseURLStringFromZBApiURL(apiBaseUrl);
 }
 
@@ -68,20 +100,11 @@ bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
             return false;
         }
         // {} is an error too: a file is never an empty object.
-        if (o.empty()) {
+        if (o.empty() || (o.size() == 1 && o.contains("success") && zbSuccessFlag(o["success"]) < 0)) {
             return true;
         }
-        if (o.contains("success")) {
-            const auto& s = o["success"];
-            if (s == false) {
-                return true;
-            }
-            if (s.is_string()) {
-                std::string sv = s.get<std::string>();
-                if (sv == "false" || sv == "False") {
-                    return true;
-                }
-            }
+        if (o.contains("success") && zbSuccessFlag(o["success"]) == 0) {
+            return true;
         }
         for (const char* k : {"message", "error", "error_message", "Message", "Error"}) {
             if (!o.contains(k)) {
@@ -154,7 +177,7 @@ void ZeroBounce::getApiUsage(
     if (invalidApiKey(errorCallback)) return;
 
     std::string dateFormat = "%Y-%m-%d";
-    std::ostringstream url;
+    ZbSecretUrl url;
 
     std::ostringstream startStr;
     std::ostringstream endStr;
@@ -244,6 +267,7 @@ void ZeroBounce::validate(
         std::string body =
             "api_key=" + urlEncode(apiKey) +
             "&email=" + urlEncode(email);
+        ZbWipeGuard wipeBody(body);
         // An empty ip_address= is not the same as leaving it out.
         if (!ipAddress.empty()) {
             body += "&ip_address=" + urlEncode(ipAddress);
@@ -290,6 +314,7 @@ void ZeroBounce::validate(
 
     std::string url = apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
         "&email=" + urlEncode(email);
+    ZbWipeGuard wipeUrl(url);
     if (!ipAddress.empty()) {
         url += "&ip_address=" + urlEncode(ipAddress);
     }
@@ -365,13 +390,16 @@ void ZeroBounce::validateBatch(
             payload["verify_plus"] = options.verifyPlus.value();
         }
 
+        std::string requestBody = payload.dump();
+        ZbWipeGuard wipeRequestBody(requestBody);
+        zbSecureWipe(payload["api_key"].get_ref<std::string&>());
         cpr::Response reqResponse = requestHandler->Post(
             cpr::Url{apiBaseUrl + "/validatebatch"},
             cpr::Header{
                 {"Accept", "application/json"},
                 {"Content-Type", "application/json"}
             },
-            cpr::Body{payload.dump()}
+            cpr::Body{requestBody}
         );
 
         json parsed;
@@ -527,6 +555,7 @@ void ZeroBounce::scoreEmailPost(
     try {
         std::string body =
             "api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email);
+        ZbWipeGuard wipeBody(body);
 
         cpr::Response reqResponse = requestHandler->Post(
             cpr::Url{apiBaseUrl + "/scoring"},
@@ -554,6 +583,7 @@ void ZeroBounce::sendRequest(
     OnErrorCallback errorCallback,
     bool allowMessageOnly
 ) {
+    ZbWipeGuard wipeUrl(urlPath);  // urlPath carries the API key
     if (invalidApiKey(errorCallback)) return;
     if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
 
@@ -603,6 +633,18 @@ void ZeroBounce::sendFileInternal(
             {"file", cpr::File{filePath}},
             {"email_address_column", emailAddressColumnIndex}
         };
+
+        // The multipart holds its own copy of the key.
+        struct WipeMultipartKey {
+            cpr::Multipart& multipart;
+            ~WipeMultipartKey() {
+                for (auto& part : multipart.parts) {
+                    if (part.name == "api_key") {
+                        zbSecureWipe(part.value);
+                    }
+                }
+            }
+        } wipeMultipartKey{multipart};
 
         if (!scoring) {
             if (options.firstNameColumn > 0) {
@@ -739,7 +781,7 @@ void ZeroBounce::findEmailInternal(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    std::stringstream urlStream;
+    ZbSecretUrl urlStream;
     urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
         urlStream << "&domain=" << urlEncode(domain);
@@ -825,7 +867,7 @@ void ZeroBounce::searchDomainInternal(
     OnSuccessCallback<ZBDomainSearchResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    std::stringstream urlStream;
+    ZbSecretUrl urlStream;
     urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
         urlStream << "&domain=" << urlEncode(domain);
@@ -860,7 +902,7 @@ void ZeroBounce::findEmail(
     OnSuccessCallback<ZBFindEmailResponse> successCallback,
     OnErrorCallback errorCallback
 ) {
-    std::stringstream urlStream;
+    ZbSecretUrl urlStream;
     urlStream << apiBaseUrl << "/guessformat?api_key=" << urlEncode(apiKey);
     if (domain.size() > 0) {
         urlStream << "&domain=" << urlEncode(domain);

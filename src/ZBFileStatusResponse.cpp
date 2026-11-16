@@ -25,7 +25,7 @@ std::string ZBFileStatusResponse::toString()
 ZBFileStatusResponse ZBFileStatusResponse::from_json(const json& j) {
     ZBFileStatusResponse r;
 
-    r.success = getOrDefault<bool>(j, "success", false);
+    r.success = zbSuccessOf(j);
     r.message = zbFileJobMessage(j);
     r.errorReason = getOrDefault<std::string>(j, "error_reason", "");
     r.fileId = getOrDefault<std::string>(j, "file_id", "");

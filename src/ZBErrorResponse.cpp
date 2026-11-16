@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZBErrorResponse.h"
+#include "ZeroBounce/utils.h"
 
 using json = nlohmann::json;
 
@@ -54,8 +55,11 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
                     errors.push_back(entry.value().get<std::string>());
                 }
             } else {
-                if (entry.key() == "success" && entry.value().is_boolean()) {
-                    response.success = entry.value().get<bool>();
+                if (entry.key() == "success" && zbSuccessFlag(entry.value()) >= 0) {
+                    response.success = zbSuccessFlag(entry.value()) == 1;
+                } else if (entry.key() == "success") {
+                    // not a flag and not a result field
+                    continue;
                 } else if (entry.value().is_array()) {
                     std::vector<std::string> values = entry.value();
                     otherMessages.insert(otherMessages.end(), values.begin(), values.end());

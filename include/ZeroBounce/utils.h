@@ -27,6 +27,74 @@ private:
     std::string field_;
 };
 
+/**
+ * How a "success" member reads as a flag: 1 for true, 0 for false, and -1 when
+ * it is not a flag at all. A flag is a JSON boolean, the number 0 or 1 (0.0 and
+ * 1.0 too), or a string that is "true", "false", "0" or "1" in any case with
+ * ASCII whitespace around it. Any other value (null, "", "maybe", a list, an
+ * object, 2) is no flag: it decides nothing and is not a result field either.
+ * Every reader of a "success" member goes through this one function.
+ */
+inline int zbSuccessFlag(const json& value) {
+    if (value.is_boolean()) {
+        return value.get<bool>() ? 1 : 0;
+    }
+    if (value.is_number()) {
+        const double number = value.get<double>();
+        if (number == 0.0) {
+            return 0;
+        }
+        if (number == 1.0) {
+            return 1;
+        }
+        return -1;
+    }
+    if (value.is_string()) {
+        const std::string& raw = value.get_ref<const std::string&>();
+        auto space = [](char c) { return c == ' ' || (c >= '\t' && c <= '\r'); };
+        size_t begin = 0;
+        size_t end = raw.size();
+        while (begin < end && space(raw[begin])) {
+            ++begin;
+        }
+        while (end > begin && space(raw[end - 1])) {
+            --end;
+        }
+        std::string text;
+        for (size_t i = begin; i < end; ++i) {
+            const char c = raw[i];
+            text.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+        }
+        if (text == "true" || text == "1") {
+            return 1;
+        }
+        if (text == "false" || text == "0") {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/**
+ * The "success" member of a file-job answer as a bool: true only for a true
+ * flag. Absent or null is false; a value that is no flag throws
+ * ZBJsonFieldTypeError, as every typed field of the wrong type does.
+ */
+inline bool zbSuccessOf(const json& j) {
+    if (!j.is_object()) {
+        return false;
+    }
+    auto it = j.find("success");
+    if (it == j.end() || it->is_null()) {
+        return false;
+    }
+    const int flag = zbSuccessFlag(*it);
+    if (flag < 0) {
+        throw ZBJsonFieldTypeError("success");
+    }
+    return flag == 1;
+}
+
 template<typename T>
 struct zbIsStringVector : std::false_type {};
 

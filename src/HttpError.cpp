@@ -1,4 +1,5 @@
 #include "HttpError.h"
+#include "ZBCaseFold.h"
 
 #include <algorithm>
 #include <atomic>
@@ -100,6 +101,17 @@ std::string jsonErrorText(const json& object) {
     return jsonErrorTextFrom(object, {"error", "message", "error_message", "Message", "Error", "detail"});
 }
 
+// Whether the object has a "success" member that is a real flag.
+bool zbHasSuccessFlag(const json& object) {
+    auto it = object.find("success");
+    return it != object.end() && zbSuccessFlag(*it) >= 0;
+}
+
+// An object with no members, or only a "success" member that is no flag.
+bool jsonEffectivelyEmpty(const json& object) {
+    return object.empty() || (object.size() == 1 && object.contains("success") && !zbHasSuccessFlag(object));
+}
+
 // The API's own message when an HTTP 200 body is nothing but an error: an
 // "error", "error_message" or "Error" field, and no "success" field to gate on.
 // An invalid or drained key answers validate, activity and getapiusage with
@@ -107,7 +119,7 @@ std::string jsonErrorText(const json& object) {
 // stay out of this list because successful responses use them too -- a bulk
 // submit answers {"success": true, "message": "File Accepted"}.
 std::string jsonErrorOnlyText(const json& object) {
-    if (!object.is_object() || object.contains("success")) {
+    if (!object.is_object() || zbHasSuccessFlag(object)) {
         return "";
     }
     return jsonErrorTextFrom(object, {"error", "error_message", "Error"});
@@ -119,15 +131,18 @@ std::string jsonErrorOnlyText(const json& object) {
 // The values of the message keys do not matter: a string, a blank, null or a
 // list is a message. An object with a non-null field of its own is a result.
 bool jsonMessageOnly(const json& object) {
-    if (!object.is_object() || object.contains("success")) {
+    if (!object.is_object() || zbHasSuccessFlag(object)) {
         return false;
     }
-    if (object.empty()) {
+    if (jsonEffectivelyEmpty(object)) {
         return true;
     }
     static const char* const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
     bool hasMessage = false;
     for (auto it = object.begin(); it != object.end(); ++it) {
+        if (it.key() == "success") {
+            continue;  // not a flag (a flag returned above): not a result field
+        }
         if (std::find_if(std::begin(keys), std::end(keys),
                 [&](const char* key) { return it.key() == key; }) != std::end(keys)) {
             hasMessage = true;
@@ -169,7 +184,7 @@ size_t zbSkipDownloadPadding(const std::string& body) {
 const char* const kZbRedirectMessage = "ZeroBounce returned a redirect, which this client does not follow.";
 
 bool zbFileStatusHasKnownField(const json& body) {
-    static const char* const fields[] = {"success", "error_reason", "file_id", "file_name", "upload_date",
+    static const char* const fields[] = {"error_reason", "file_id", "file_name", "upload_date",
         "file_status", "complete_percentage", "file_phase_2_status", "return_url"};
     if (!body.is_object()) {
         return false;
@@ -222,6 +237,11 @@ std::string zbMessageFromBody(const std::string& body, long statusCode) {
             if (!fromField.empty()) {
                 return stripErrorPrefix(fromField);
             }
+            // No message or error field: the body itself, capped like the
+            // non-JSON text below (1000 bytes), else the fixed text.
+            if (trimmed.size() > 1000) {
+                return "ZeroBounce returned an error with no message text.";
+            }
             return trimmed;
         } catch (const std::exception&) {
             return "ZeroBounce returned a response that is not valid JSON.";
@@ -237,20 +257,10 @@ std::string zbMessageFromBody(const std::string& body, long statusCode) {
     return message;
 }
 
-// Whether a "success" field means failure. The API sends it as a JSON false,
-// "false" or "False" depending on the endpoint.
+// Whether a "success" field means failure: a false flag in any spelling
+// (zbSuccessFlag). A value that is no flag is not a failure.
 static bool zbSuccessMeansFailure(const json& value) {
-    if (value.is_boolean()) {
-        return !value.get<bool>();
-    }
-    if (value.is_string()) {
-        std::string text = value.get<std::string>();
-        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        return trimCopy(text) == "false";
-    }
-    return false;
+    return zbSuccessFlag(value) == 0;
 }
 
 void zbReportHttpError(
@@ -526,7 +536,7 @@ static bool zbReadJsonBody(
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
-    if (rule == ZbBodyRule::TypedAllowMessage && out.is_object() && out.empty()) {
+    if (rule == ZbBodyRule::TypedAllowMessage && out.is_object() && jsonEffectivelyEmpty(out)) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
@@ -769,15 +779,176 @@ std::string zbJsonUnescapeView(const std::string& text, bool wideU = true) {
     return out;
 }
 
+// The HTML named character references for U+00A0..U+00FF, in order (they
+// decode with or without the closing semicolon, as HTML5 reads them).
+const char* const kZbLatin1Entities[96] = {
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf", "laquo",
+    "not", "shy", "reg", "macr", "deg", "plusmn", "sup2", "sup3", "acute", "micro", "para", "middot",
+    "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest", "Agrave", "Aacute", "Acirc",
+    "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc", "Euml", "Igrave", "Iacute",
+    "Icirc", "Iuml", "ETH", "Ntilde", "Ograve", "Oacute", "Ocirc", "Otilde", "Ouml", "times", "Oslash",
+    "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN", "szlig", "agrave", "aacute", "acirc", "atilde",
+    "auml", "aring", "aelig", "ccedil", "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc",
+    "iuml", "eth", "ntilde", "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave",
+    "uacute", "ucirc", "uuml", "yacute", "thorn", "yuml",
+};
+
+// A named reference at text[at..] (just after the '&'): sets cp and used (the
+// name and its semicolon, if any, not the '&') for quot, amp, lt, gt, apos (any
+// case) and the Latin-1 set.
+bool zbNamedEntity(const std::string& text, size_t at, long& cp, size_t& used) {
+    const size_t left = text.size() - at;
+    static const struct {
+        const char* name;
+        long cp;
+    } basic[] = {{"quot", '"'}, {"amp", '&'}, {"lt", '<'}, {"gt", '>'}};
+    for (const auto& entry : basic) {
+        const size_t n = std::strlen(entry.name);
+        if (left >= n + 1 && text.compare(at, n, entry.name) == 0 && text[at + n] == ';') {
+            cp = entry.cp;
+            used = n + 1;
+            return true;
+        }
+    }
+    if (left >= 5 && text[at + 4] == ';') {
+        std::string name = text.substr(at, 4);
+        for (char& c : name) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        // "apos" is only ever followed by its semicolon.
+        if (left >= 5 && name == "apos") {
+            cp = '\'';
+            used = 5;
+            return true;
+        }
+    }
+    for (int i = 0; i < 96; ++i) {
+        const size_t n = std::strlen(kZbLatin1Entities[i]);
+        if (left >= n && text.compare(at, n, kZbLatin1Entities[i]) == 0) {
+            cp = 0xA0 + i;
+            used = n + (left > n && text[at + n] == ';' ? 1 : 0);
+            return true;
+        }
+    }
+    return false;
+}
+
+// text with the character spellings a body can quote a secret in undone: \xHH
+// (as that BYTE, so a UTF-8 secret can be spelled byte by byte), \' , numeric
+// HTML references (&#39; &#x27;, any number of digits, the semicolon optional),
+// the named ones (&apos; in any case, &quot; &amp; &lt; &gt; and the Latin-1
+// set), and a doubled '' for a single quote. Anything else is kept.
+std::string zbSpellingDecodeView(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    const size_t n = text.size();
+    for (size_t i = 0; i < n;) {
+        const char c = text[i];
+        if (c == '\\' && i + 1 < n) {
+            if ((text[i + 1] == 'x' || text[i + 1] == 'X') && i + 3 < n && zbHexValue(text[i + 2]) >= 0 &&
+                zbHexValue(text[i + 3]) >= 0) {
+                out += static_cast<char>(zbHexValue(text[i + 2]) * 16 + zbHexValue(text[i + 3]));
+                i += 4;
+                continue;
+            }
+            if (text[i + 1] == '\'') {
+                out += '\'';
+                i += 2;
+                continue;
+            }
+        } else if (c == '&' && i + 2 < n) {
+            long cp = -1;
+            size_t used = 0;
+            if (text[i + 1] == '#') {
+                size_t q = i + 2;
+                const bool hex = text[q] == 'x' || text[q] == 'X';
+                if (hex) {
+                    ++q;
+                }
+                long value = 0;
+                size_t digits = 0;
+                while (q + digits < n && (hex ? zbHexValue(text[q + digits]) >= 0
+                                              : (text[q + digits] >= '0' && text[q + digits] <= '9'))) {
+                    if (value <= 0x10FFFF) {
+                        value = value * (hex ? 16 : 10) + (hex ? zbHexValue(text[q + digits]) : text[q + digits] - '0');
+                    }
+                    ++digits;
+                }
+                if (digits && value <= 0x10FFFF) {
+                    cp = value;
+                    used = q + digits - i;
+                    if (q + digits < n && text[q + digits] == ';') {
+                        ++used;
+                    }
+                }
+            } else if (zbNamedEntity(text, i + 1, cp, used)) {
+                ++used;  // the '&'
+            }
+            if (cp >= 0 && used) {
+                zbAppendUtf8(out, static_cast<unsigned long>(cp));
+                i += used;
+                continue;
+            }
+        } else if (c == '\'' && i + 1 < n && text[i + 1] == '\'') {
+            out += '\'';
+            i += 2;
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
+// Whether needle (already case-folded) occurs in text under full case folding.
+bool zbFoldedContains(const std::string& text, const std::string& foldedNeedle) {
+    return zbCaseFold(text).find(foldedNeedle) != std::string::npos;
+}
+
+// text with every occurrence of needle, under full case folding, replaced by
+// "***". The match is found in the folded text and mapped back, so the span
+// masked in the ORIGINAL text is the characters that fold to the secret, even
+// where a folded form is longer or shorter than the original ("ß" is "ss").
+std::string zbMaskFolded(const std::string& text, const std::string& needle) {
+    const std::string foldedNeedle = zbCaseFold(needle);
+    if (foldedNeedle.empty()) {
+        return text;
+    }
+    std::vector<ZbFoldSpan> spans;
+    const std::string folded = zbCaseFold(text, &spans);
+    std::vector<ZbFoldSpan> hits;
+    for (size_t at = 0; (at = folded.find(foldedNeedle, at)) != std::string::npos; at += foldedNeedle.size()) {
+        ZbFoldSpan hit{spans[at].begin, spans[at + foldedNeedle.size() - 1].end};
+        if (!hits.empty() && hit.begin < hits.back().end) {
+            hits.back().end = std::max(hits.back().end, hit.end);
+        } else {
+            hits.push_back(hit);
+        }
+    }
+    if (hits.empty()) {
+        return text;
+    }
+    std::string out;
+    size_t from = 0;
+    for (const auto& hit : hits) {
+        out.append(text, from, hit.begin - from);
+        out += "***";
+        from = hit.end;
+    }
+    out.append(text, from, std::string::npos);
+    return out;
+}
+
 // The SDK's own request encoding plus three layers a server or proxy may add
 // when it echoes the request back.
 constexpr int kZbSecretDecodeLayers = 4;
 
 // Whether secret can be read in text or in any view of it decoded up to
 // layers more times: URL-decoded, form-decoded ('+' as a space too) and
-// JSON-unescaped, in any order.
-bool zbSecretInDecodedViews(const std::string& text, const std::string& secret, int layers) {
-    if (text.find(secret) != std::string::npos) {
+// JSON-unescaped and spelling-decoded (HTML entities, \x), in any order, all
+// compared under Unicode case folding (foldedSecret is already folded).
+bool zbSecretInDecodedViews(const std::string& text, const std::string& foldedSecret, int layers) {
+    if (zbFoldedContains(text, foldedSecret)) {
         return true;
     }
     if (layers == 0) {
@@ -785,8 +956,8 @@ bool zbSecretInDecodedViews(const std::string& text, const std::string& secret, 
     }
     for (const std::string& view :
          {zbUrlDecodeView(text, false), zbUrlDecodeView(text, true), zbJsonUnescapeView(text, true),
-          zbJsonUnescapeView(text, false)}) {
-        if (view != text && zbSecretInDecodedViews(view, secret, layers - 1)) {
+          zbJsonUnescapeView(text, false), zbSpellingDecodeView(text)}) {
+        if (view != text && zbSecretInDecodedViews(view, foldedSecret, layers - 1)) {
             return true;
         }
     }
@@ -800,17 +971,23 @@ std::string zbMaskSecret(std::string text, const std::string& secret) {
         return text;
     }
     for (const auto& form : zbSecretForms(secret)) {
-        for (size_t at = 0; (at = text.find(form, at)) != std::string::npos; at += 3) {
-            text.replace(at, form.size(), "***");
-        }
+        text = zbMaskFolded(text, form);
     }
     // Redaction is closed under encoding: a spelling the forms above miss
     // (three URL layers, URL of double JSON, ...) still decodes to the
     // secret, and then none of the text is kept.
-    if (zbSecretInDecodedViews(text, secret, kZbSecretDecodeLayers)) {
+    if (zbSecretInDecodedViews(text, zbCaseFold(secret), kZbSecretDecodeLayers)) {
         return kZbSecretOmittedMessage;
     }
     return text;
+}
+
+void zbSecureWipe(std::string& secret) {
+    volatile char* p = secret.empty() ? nullptr : &secret[0];
+    for (size_t i = 0; i < secret.size(); ++i) {
+        p[i] = 0;
+    }
+    secret.clear();
 }
 
 std::string zbRedactApiKey(std::string text, const std::string& apiKey) {
@@ -871,12 +1048,12 @@ bool zbIsInvisibleOrSpace(long cp) {
         long high;
     };
     static const Range ranges[] = {
-        {0x007F, 0x009F}, {0x00A0, 0x00A0}, {0x00AD, 0x00AD}, {0x0600, 0x0605}, {0x061C, 0x061C},
-        {0x06DD, 0x06DD}, {0x070F, 0x070F}, {0x0890, 0x0891}, {0x08E2, 0x08E2}, {0x1680, 0x1680},
-        {0x180E, 0x180E}, {0x2000, 0x200F}, {0x2028, 0x202F}, {0x205F, 0x206F}, {0x3000, 0x3000},
-        {0xFEFF, 0xFEFF}, {0xFFF9, 0xFFFB}, {0x110BD, 0x110BD}, {0x110CD, 0x110CD},
-        {0x13430, 0x1343F}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0001, 0xE0001},
-        {0xE0020, 0xE007F},
+        {0x007F, 0x00A0}, {0x00AD, 0x00AD}, {0x034F, 0x034F}, {0x0600, 0x0605}, {0x061C, 0x061C},
+        {0x06DD, 0x06DD}, {0x070F, 0x070F}, {0x0890, 0x0891}, {0x08E2, 0x08E2}, {0x115F, 0x1160},
+        {0x17B4, 0x17B5}, {0x1680, 0x1680}, {0x180B, 0x180F}, {0x2000, 0x200F}, {0x2028, 0x202F},
+        {0x205F, 0x206F}, {0x2800, 0x2800}, {0x3000, 0x3000}, {0x3164, 0x3164}, {0xFE00, 0xFE0F},
+        {0xFEFF, 0xFEFF}, {0xFFA0, 0xFFA0}, {0xFFF0, 0xFFFB}, {0x110BD, 0x110BD}, {0x110CD, 0x110CD},
+        {0x13430, 0x1343F}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0000, 0xE0FFF},
     };
     return std::any_of(std::begin(ranges), std::end(ranges),
         [cp](const Range& range) { return cp >= range.low && cp <= range.high; });
@@ -911,6 +1088,37 @@ std::string zbNormalizeBaseUrl(std::string url) {
         url.pop_back();
     }
     return url;
+}
+
+namespace {
+
+// Whether url[from, to) has no space, control character, invisible character,
+// backslash or invalid UTF-8.
+bool zbUrlRangeIsClean(const std::string& url, size_t from, size_t to) {
+    for (size_t at = from; at < to;) {
+        const auto byte = static_cast<unsigned char>(url[at]);
+        if (byte < 0x80) {
+            if (byte == ' ' || byte == '\\' || std::iscntrl(byte) != 0) {
+                return false;
+            }
+            ++at;
+            continue;
+        }
+        const long cp = zbNextCodePoint(url, at);
+        if (cp < 0 || zbIsInvisibleOrSpace(cp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+const char* const kZbDirtyUrlMessage =
+    "request URL must not contain a query, a fragment, a backslash, whitespace or control characters";
+
+bool zbBaseUrlIsClean(const std::string& url) {
+    return url.find_first_of("?#") == std::string::npos && zbUrlRangeIsClean(url, 0, url.size());
 }
 
 bool zbUrlHasUserinfo(const std::string& url) {
@@ -956,6 +1164,15 @@ bool zbCheckRequestUrl(
     }
     if (zbUrlHasEmptyHost(url)) {
         return reject("url must be an https:// URL");
+    }
+    // Before the first ? the URL is a base the caller set: no query, fragment,
+    // backslash, whitespace, control or invisible character. After it only the
+    // SDK's own escaped query may follow, so a ? left in a base (which the
+    // SDK's path would then follow) shows up as a / after the ?.
+    const auto query = url.find('?');
+    if (url.find('#') != std::string::npos || !zbUrlRangeIsClean(url, 0, url.size()) ||
+        (query != std::string::npos && url.find_first_of("/?", query + 1) != std::string::npos)) {
+        return reject(kZbDirtyUrlMessage);
     }
     return true;
 }

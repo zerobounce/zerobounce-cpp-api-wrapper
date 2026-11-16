@@ -18,7 +18,7 @@ std::string ZBGetFileResponse::toString()
 ZBGetFileResponse ZBGetFileResponse::from_json(const json& j) {
     ZBGetFileResponse r;
 
-    r.success = getOrDefault<bool>(j, "success", false);
+    r.success = zbSuccessOf(j);
     r.message = zbFileJobMessage(j);
 
     return r;

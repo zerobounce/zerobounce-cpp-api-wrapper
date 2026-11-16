@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZBErrorResponse.h"
+#include "ZeroBounce/utils.h"
 
 using json = nlohmann::json;
 
@@ -59,6 +60,12 @@ extern const char* const kZbDirtyApiKeyMessage;
  * becomes `//validate`.
  */
 std::string zbNormalizeBaseUrl(std::string url);
+
+/** The error for a URL with a query, fragment, backslash, whitespace or control/invisible character in its base. */
+extern const char* const kZbDirtyUrlMessage;
+
+/** Whether a base URL has none of those (no ? or # at all). Used by Warmup initialize. */
+bool zbBaseUrlIsClean(const std::string& url);
 
 /**
  * Reports "url must be an https:// URL" and returns false for a URL that is not
@@ -221,6 +228,24 @@ extern const char* const kZbSecretOmittedMessage;
  * text is replaced by kZbSecretOmittedMessage.
  */
 std::string zbMaskSecret(std::string text, const std::string& secret);
+
+/**
+ * Overwrites a secret held in a string, writing through a volatile pointer so
+ * the compiler cannot drop the stores as dead, then clears it.
+ */
+void zbSecureWipe(std::string& secret);
+
+/** Wipes the string it was given when it goes out of scope. */
+class ZbWipeGuard {
+public:
+    explicit ZbWipeGuard(std::string& value) : value_(value) {}
+    ZbWipeGuard(const ZbWipeGuard&) = delete;
+    ZbWipeGuard& operator=(const ZbWipeGuard&) = delete;
+    ~ZbWipeGuard() { zbSecureWipe(value_); }
+
+private:
+    std::string& value_;
+};
 
 /**
  * A copy of text with the API key, raw, URL-encoded and JSON-escaped,

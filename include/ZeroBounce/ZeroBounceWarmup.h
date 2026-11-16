@@ -102,7 +102,8 @@ class ZeroBounceWarmup {
         static constexpr int AnyTeamId = 1;
 
         ZeroBounceWarmup();
-        virtual ~ZeroBounceWarmup() = default;
+        /** Wipes the API key from memory before the client goes away. */
+        virtual ~ZeroBounceWarmup();
 
         /**
          * Store the Warmup API key, and optionally a custom https base URL.
