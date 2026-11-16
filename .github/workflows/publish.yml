@@ -22,7 +22,7 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
-          re='^v?[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$'
+          re='^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$'
           if [[ ! "$TAG" =~ $re ]]; then
             echo "Error: the tag input must be a release tag such as v1.2.3."
             exit 1
@@ -33,11 +33,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: refs/tags/${{ github.event.inputs.tag }}
-
           persist-credentials: false
+
       - name: Verify tag and project version
+        env:
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then
             echo "Error: Tag is required."
             exit 1
@@ -56,7 +57,7 @@ jobs:
             echo "Error: CMakeLists.txt version ($PKG_VERSION) does not match tag ($TAG)."
             exit 1
           fi
-          
+
       - name: Record tag commit SHA
         id: tag_sha
         env:
@@ -70,13 +71,22 @@ jobs:
     needs: [validate-tag]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
-    environment: release
     steps:
-      - name: Checkout tag
+      - name: Checkout validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ github.event.inputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.tag_sha }}
           persist-credentials: false
+
+      - name: Check HEAD is the validated commit
+        env:
+          EXPECTED_SHA: ${{ needs.validate-tag.outputs.tag_sha }}
+        run: |
+          if [ -z "$EXPECTED_SHA" ] || [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "::error::HEAD is not the commit the validate job recorded."
+            exit 1
+          fi
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -88,6 +98,57 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
+      - name: Build as a FetchContent consumer
+        # A project that pulls this repository in with FetchContent links the
+        # library only: it must not fetch googletest or define the test target.
+        # The parent build's _deps are reused so nothing is downloaded twice.
+        run: |
+          deps="$GITHUB_WORKSPACE/build/_deps"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer"
+          cat > "$consumer/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(ZeroBounceConsumer LANGUAGES CXX)
+          include(FetchContent)
+          FetchContent_Declare(zerobounce GIT_REPOSITORY https://example.invalid/zerobounce.git)
+          FetchContent_MakeAvailable(zerobounce)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE ZeroBounce)
+          EOF
+          cat > "$consumer/main.cpp" <<'EOF'
+          #include "ZeroBounce/ZeroBounce.h"
+
+          int main() {
+              ZeroBounce *(*instance)() = &ZeroBounce::getInstance;
+              return instance == nullptr;
+          }
+          EOF
+          cmake -S "$consumer" -B "$consumer/build" -G "Unix Makefiles" \
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+            -DFETCHCONTENT_SOURCE_DIR_ZEROBOUNCE="$GITHUB_WORKSPACE" \
+            -DFETCHCONTENT_SOURCE_DIR_CURL="$deps/curl-src" \
+            -DFETCHCONTENT_SOURCE_DIR_CPR="$deps/cpr-src" \
+            -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON="$deps/nlohmann_json-src"
+          cmake --build "$consumer/build" --target consumer
+          # Look for the cache entry of a FetchContent_MakeAvailable of googletest:
+          # it exists only when the library's top-level guard is gone.
+          if [ ! -f "$consumer/build/CMakeCache.txt" ]; then
+            echo "::error::The FetchContent consumer has no CMakeCache.txt."
+            exit 1
+          fi
+          if grep -E 'FETCHCONTENT_SOURCE_DIR_GOOGLETEST' "$consumer/build/CMakeCache.txt"; then
+            echo "::error::A FetchContent consumer fetched googletest."
+            exit 1
+          fi
+          if ! targets=$(cmake --build "$consumer/build" --target help); then
+            echo "::error::cmake --build --target help failed in the FetchContent consumer."
+            exit 1
+          fi
+          if printf '%s\n' "$targets" | grep -E 'ZeroBounceTests'; then
+            echo "::error::A FetchContent consumer defines a test target."
+            exit 1
+          fi
+
   release:
     name: Create GitHub Release
     needs: [validate-tag, test]
@@ -97,23 +158,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.validate-tag.outputs.tag_sha }}
-          fetch-depth: 0
-
-          persist-credentials: false
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+          TAG_SHA: ${{ needs.validate-tag.outputs.tag_sha }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping."
           else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --target "$TAG_SHA" \
               --title "$TAG" \
               --generate-notes
           fi

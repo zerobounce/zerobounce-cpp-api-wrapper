@@ -14,6 +14,25 @@
 
 using json = nlohmann::json;
 
+/**
+ * How many bytes at the start of a body are padding before its content: any
+ * number of space, tab, CR, LF, VT, FF, a UTF-8 byte order mark and NBSP
+ * (U+00A0). The HTML and JSON sniffs start after it.
+ */
+size_t zbSkipDownloadPadding(const std::string& body);
+
+/** What an error says for a 3xx on any call. */
+extern const char* const kZbRedirectMessage;
+
+/** Whether a URL has a username or password: an '@' in its authority. */
+bool zbUrlHasUserinfo(const std::string& url);
+
+/** Whether an https:// URL has no host between "://" and the first /, ? or #. */
+bool zbUrlHasEmptyHost(const std::string& url);
+
+/** Whether a file-status object has at least one non-null status field of the API's. */
+bool zbFileStatusHasKnownField(const json& body);
+
 bool zbBodyLooksLikeHtml(const std::string& body);
 bool zbContentTypeIsHtml(const std::string& contentType);
 std::string zbMessageFromBody(const std::string& body, long statusCode);
@@ -24,8 +43,10 @@ void zbReportHttpError(
 );
 
 /**
- * Whether an API key can be sent: true unless it has surrounding whitespace or
- * control characters. Such a key would be quoted, unredacted, in the HTTP
+ * Whether an API key can be sent: true unless it has surrounding whitespace,
+ * ASCII control characters, or a Unicode whitespace or invisible character
+ * (NBSP, a zero-width space, a byte order mark, a bidi override, ...). A space
+ * inside the key is allowed. Such a key would be quoted, unredacted, in the HTTP
  * library's own error.
  */
 bool zbApiKeyIsClean(const std::string& apiKey);
@@ -41,7 +62,9 @@ std::string zbNormalizeBaseUrl(std::string url);
 
 /**
  * HTTPS only: reports "url must be an https:// URL" and returns false for any
- * other URL, before anything is sent. Every request path calls this.
+ * other URL (or one with no host), and "url must not contain a username or
+ * password" for one with userinfo, before anything is sent. Every request path
+ * calls this.
  */
 bool zbCheckRequestUrl(
     const std::string& url,
@@ -89,8 +112,28 @@ bool zbReadJsonResponse(
 enum class ZbJsonShape { Object, Array };
 
 /**
- * zbReadJsonResponse (or zbReadNonMessageJsonResponse when nonMessage is set)
- * for a typed call. Valid JSON of another shape (0, "x", [], true, null) is
+ * What an HTTP 200 JSON body may be, beyond being JSON.
+ *  - Raw: any JSON value the call's shape allows (filters, Inbox Placement,
+ *    list evaluator).
+ *  - Typed: also not an error. {} and a body of only message fields
+ *    ("message", "Message", "detail", ...), alone or beside fields that are
+ *    all null, are errors with the HTTP status.
+ *  - TypedAllowMessage: validate. A bare {"Message": "Greylist ..."} is a
+ *    result; {} is still an error.
+ */
+enum class ZbBodyRule { Raw, Typed, TypedAllowMessage };
+
+/** zbReadJsonResponse with the body rule of the call. */
+bool zbReadRuledJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    ZbBodyRule rule,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+);
+
+/**
+ * zbReadRuledJsonResponse for a typed call. Valid JSON of another shape (0, "x", [], true, null) is
  * not the API's answer either, so it is an error with its HTTP status rather
  * than a result filled with defaults.
  */
@@ -99,20 +142,7 @@ bool zbReadShapedJsonResponse(
     const std::string& apiKey,
     json& out,
     ZbJsonShape shape,
-    bool nonMessage,
-    const std::function<void(ZBErrorResponse)>& errorCallback
-);
-
-/**
- * zbReadJsonResponse for a call whose result is never a bare message: the email
- * finder and domain search. A body made only of message fields is reported as
- * an error. Not for validate, which answers a repeated greylist_processing
- * request with {"Message": "Greylist validation still in progress..."}.
- */
-bool zbReadNonMessageJsonResponse(
-    const cpr::Response& response,
-    const std::string& apiKey,
-    json& out,
+    ZbBodyRule rule,
     const std::function<void(ZBErrorResponse)>& errorCallback
 );
 
@@ -130,10 +160,25 @@ bool zbReportFailedDownload(
 
 /**
  * Whether a download's body is the API saying why there is no file: a JSON
- * content type, or a body that is a JSON object (a result file never starts
- * with "{"), whatever its keys.
+ * content type (application/json, or any type ending in +json), or a body
+ * that is a JSON object or array after its padding (a result file never starts
+ * with "{" or "["), whatever its keys.
  */
 bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentType);
+
+/** The API's message in a JSON download body: its message field, or the strings of a list. */
+std::string zbDownloadJsonMessage(const std::string& body, long statusCode);
+
+/**
+ * For a download that came back 2xx: reports and returns true when the body is
+ * not a file -- empty or only padding, an HTML page, or JSON -- so that nothing
+ * is written. jsonMessage, when set, words the error for a JSON body.
+ */
+bool zbReportBadDownloadBody(
+    const cpr::Response& response,
+    const std::function<void(ZBErrorResponse)>& errorCallback,
+    const std::function<std::string(const std::string&)>& jsonMessage = nullptr
+);
 
 /**
  * Writes a downloaded file, creating its parent directories. Reports a path
@@ -257,9 +302,9 @@ bool zbReadTypedJson(
     ZBOutcome<T>& outcome,
     json& out,
     ZbJsonShape shape = ZbJsonShape::Object,
-    bool nonMessage = false
+    ZbBodyRule rule = ZbBodyRule::Typed
 ) {
-    if (!zbReadShapedJsonResponse(response, outcome.apiKey(), out, shape, nonMessage, outcome.errorSink())) {
+    if (!zbReadShapedJsonResponse(response, outcome.apiKey(), out, shape, rule, outcome.errorSink())) {
         return false;
     }
     outcome.noteStatus(response.status_code);

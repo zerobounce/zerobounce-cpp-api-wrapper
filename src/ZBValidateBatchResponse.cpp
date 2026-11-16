@@ -6,7 +6,7 @@
 std::string ZBValidateError::toString()
 {
     std::stringstream stringStream;
-    stringStream << "{error='" << error << '\'' <<
+    stringStream << "ZBValidateError{error='" << error << '\'' <<
                 ", emailAddress='" << emailAddress << "\'}";
 
     return stringStream.str();

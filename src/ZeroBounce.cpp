@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <type_traits>
 
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
@@ -50,15 +51,14 @@ void ZeroBounce::initialize(
 }
 
 bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
-    std::size_t i = 0;
-    while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) {
-        i++;
-    }
+    // The same padding skip as the download sniff: a byte order mark or NBSP
+    // in front of the object does not hide it.
+    const std::size_t i = zbSkipDownloadPadding(body);
     if (i >= body.size() || body[i] != '{') {
         return false;
     }
     try {
-        json o = json::parse(body);
+        json o = json::parse(body.substr(i));
         if (!o.is_object()) {
             return false;
         }
@@ -94,9 +94,12 @@ bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
 
 std::string ZeroBounce::formatGetFileErrorMessage(const std::string& body) {
     try {
-        json o = json::parse(body);
+        const std::string content = body.substr(zbSkipDownloadPadding(body));
+        json o = json::parse(content);
         if (!o.is_object()) {
-            return body.empty() ? "Invalid getfile response" : body;
+            // A list of messages (["File not ready"]) is read as the API's words.
+            const std::string joined = zbDownloadJsonMessage(content, 0);
+            return content.empty() ? "Invalid getfile response" : joined;
         }
         for (const char* k : {"message", "error", "error_message", "Message", "Error"}) {
             if (!o.contains(k)) {
@@ -139,7 +142,9 @@ bool ZeroBounce::invalidApiKey(OnErrorCallback errorCallback) {
         ZBErrorResponse errorResponse = ZBErrorResponse::parseError(
             "ZeroBounce is not initialized. Please call ZeroBounce::getInstance()->initialize(apiKey) first"
         );
-        errorCallback(errorResponse);
+        if (errorCallback) {
+            errorCallback(errorResponse);
+        }
         return true;
     }
     // initialize() keeps a rejected key rather than an earlier one, so every
@@ -248,12 +253,16 @@ void ZeroBounce::validate(
     // rejected here rather than letting the API take the request.
     if (options.callbackUrl.has_value()) {
         if (options.greylistProcessing != std::optional<bool>(true)) {
-            errorCallback(ZBErrorResponse::parseError(
-                "Invalid parameter: callback_url requires greylist_processing = true"));
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError(
+                    "Invalid parameter: callback_url requires greylist_processing = true"));
+            }
             return;
         }
         if (options.callbackUrl->find_first_not_of(" \t\r\n") == std::string::npos) {
-            errorCallback(ZBErrorResponse::parseError("Empty parameter: callback_url"));
+            if (errorCallback) {
+                errorCallback(ZBErrorResponse::parseError("Empty parameter: callback_url"));
+            }
             return;
         }
     }
@@ -261,8 +270,11 @@ void ZeroBounce::validate(
     if (options.usePost) {
         std::string body =
             "api_key=" + urlEncode(apiKey) +
-            "&email=" + urlEncode(email) +
-            "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress));
+            "&email=" + urlEncode(email);
+        // An empty ip_address= is not the same as leaving it out.
+        if (!ipAddress.empty()) {
+            body += "&ip_address=" + urlEncode(ipAddress);
+        }
         if (options.timeout.has_value()) {
             body += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
         }
@@ -293,7 +305,7 @@ void ZeroBounce::validate(
                 cpr::Body{body}
             );
             json parsed;
-            if (zbReadTypedJson(reqResponse, outcome, parsed)) {
+            if (zbReadTypedJson(reqResponse, outcome, parsed, ZbJsonShape::Object, ZbBodyRule::TypedAllowMessage)) {
                 outcome.succeed(ZBValidateResponse::from_json(parsed));
             }
         } catch (const std::exception&) {
@@ -304,8 +316,10 @@ void ZeroBounce::validate(
     }
 
     std::string url = apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
-        "&email=" + urlEncode(email) +
-        "&ip_address=" + (ipAddress.empty() ? "" : urlEncode(ipAddress));
+        "&email=" + urlEncode(email);
+    if (!ipAddress.empty()) {
+        url += "&ip_address=" + urlEncode(ipAddress);
+    }
     if (options.timeout.has_value()) {
         url += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
     }
@@ -325,7 +339,8 @@ void ZeroBounce::validate(
         url += "&callback_url=" + urlEncode(options.callbackUrl.value());
     }
 
-    sendRequest(url, successCallback, errorCallback);
+    // A bare {"Message": ...} is a result for validate (greylist processing).
+    sendRequest(url, successCallback, errorCallback, true);
 }
 
 void ZeroBounce::validateBatch(
@@ -564,7 +579,7 @@ void ZeroBounce::sendRequest(
     std::string urlPath,
     OnSuccessCallback<T> successCallback,
     OnErrorCallback errorCallback,
-    bool messageOnlyIsFailure
+    bool allowMessageOnly
 ) {
     if (invalidApiKey(errorCallback)) return;
     if (!zbCheckRequestUrl(urlPath, errorCallback)) return;
@@ -577,7 +592,14 @@ void ZeroBounce::sendRequest(
         );
 
         json parsed;
-        bool usable = zbReadTypedJson(reqResponse, outcome, parsed, ZbJsonShape::Object, messageOnlyIsFailure);
+        bool usable = zbReadTypedJson(
+            reqResponse, outcome, parsed, ZbJsonShape::Object,
+            allowMessageOnly ? ZbBodyRule::TypedAllowMessage : ZbBodyRule::Typed);
+        // A file-status body with none of the status fields is not a status.
+        if (usable && std::is_same<T, ZBFileStatusResponse>::value && !zbFileStatusHasKnownField(parsed)) {
+            outcome.failUnexpectedJson();
+            usable = false;
+        }
         if (usable) {
             outcome.succeed(T::from_json(parsed));
         }
@@ -704,13 +726,10 @@ void ZeroBounce::getFileInternal(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // No file is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)) {
-            zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
-        } else if (zbDownloadBodyIsJson(rsp, contentType)) {
-            // A JSON body, whatever its keys or content type, is the API
-            // saying why there is no file.
-            outcome.fail(ZBErrorResponse::parseError(
-                formatGetFileErrorMessage(rsp), reqResponse.status_code));
+        } else if (zbReportBadDownloadBody(reqResponse, outcome.errorSink(), formatGetFileErrorMessage)) {
+            // An empty or padding-only body, an HTML page, or a JSON body
+            // (whatever its keys or content type: the API saying why there is
+            // no file) is not a file.
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             // The file is saved whether or not a success callback was passed.
             ZBGetFileResponse response;
@@ -766,7 +785,7 @@ void ZeroBounce::findEmailInternal(
     if (last_name.size() > 0) {
         urlStream << "&last_name=" << urlEncode(last_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback, true);
+    sendRequest(urlStream.str(), successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmailByDomain(
@@ -843,7 +862,7 @@ void ZeroBounce::searchDomainInternal(
     if (company_name.size() > 0) {
         urlStream << "&company_name=" << urlEncode(company_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback, true);
+    sendRequest(urlStream.str(), successCallback, errorCallback);
 }
 
 void ZeroBounce::searchDomainByDomain(
@@ -884,7 +903,7 @@ void ZeroBounce::findEmail(
     if (last_name.size() > 0) {
         urlStream << "&last_name=" << urlEncode(last_name);
     }
-    sendRequest(urlStream.str(), successCallback, errorCallback, true);
+    sendRequest(urlStream.str(), successCallback, errorCallback);
 }
 
 void ZeroBounce::findEmail(
@@ -903,12 +922,12 @@ template void ZeroBounce::sendRequest<ZBFileStatusResponse>(
     std::string urlPath,
     OnSuccessCallback<ZBFileStatusResponse> successCallback,
     OnErrorCallback errorCallback,
-    bool messageOnlyIsFailure
+    bool allowMessageOnly
 );
 
 template void ZeroBounce::sendRequest<ZBDeleteFileResponse>(
     std::string urlPath,
     OnSuccessCallback<ZBDeleteFileResponse> successCallback,
     OnErrorCallback errorCallback,
-    bool messageOnlyIsFailure
+    bool allowMessageOnly
 );

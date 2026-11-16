@@ -14,6 +14,16 @@
 
 #include <curl/curl.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 std::string trimCopy(const std::string& value) {
@@ -103,21 +113,29 @@ std::string jsonErrorOnlyText(const json& object) {
     return jsonErrorTextFrom(object, {"error", "error_message", "Error"});
 }
 
-// Whether a body is nothing but a message: a non-empty object with no "success"
-// field whose keys are all message keys. The values do not matter: a string, a
-// blank, null or a list is a message.
+// Whether a body is nothing but a message: an object with no "success" field
+// that is empty, or whose keys are message keys, or message keys beside fields
+// that are all null (a message next to documented fields the API left null).
+// The values of the message keys do not matter: a string, a blank, null or a
+// list is a message. An object with a non-null field of its own is a result.
 bool jsonMessageOnly(const json& object) {
-    if (!object.is_object() || object.empty() || object.contains("success")) {
+    if (!object.is_object() || object.contains("success")) {
         return false;
     }
+    if (object.empty()) {
+        return true;
+    }
     static const char* const keys[] = {"error", "message", "error_message", "Message", "Error", "detail"};
+    bool hasMessage = false;
     for (auto it = object.begin(); it != object.end(); ++it) {
         if (std::find_if(std::begin(keys), std::end(keys),
-                [&](const char* key) { return it.key() == key; }) == std::end(keys)) {
+                [&](const char* key) { return it.key() == key; }) != std::end(keys)) {
+            hasMessage = true;
+        } else if (!it.value().is_null()) {
             return false;
         }
     }
-    return true;
+    return hasMessage;
 }
 
 bool jsonHasErrorOrMessageKey(const json& object) {
@@ -131,8 +149,41 @@ bool jsonHasErrorOrMessageKey(const json& object) {
 
 }  // namespace
 
+size_t zbSkipDownloadPadding(const std::string& body) {
+    size_t at = 0;
+    while (at < body.size()) {
+        const auto c = static_cast<unsigned char>(body[at]);
+        if (c == ' ' || (c >= '\t' && c <= '\r')) {
+            ++at;
+        } else if (c == 0xEF && body.compare(at, 3, "\xEF\xBB\xBF") == 0) {
+            at += 3;
+        } else if (c == 0xC2 && body.compare(at, 2, "\xC2\xA0") == 0) {
+            at += 2;
+        } else {
+            break;
+        }
+    }
+    return at;
+}
+
+const char* const kZbRedirectMessage = "ZeroBounce returned a redirect, which this client does not follow.";
+
+bool zbFileStatusHasKnownField(const json& body) {
+    static const char* const fields[] = {"success", "error_reason", "file_id", "file_name", "upload_date",
+        "file_status", "complete_percentage", "file_phase_2_status", "return_url"};
+    if (!body.is_object()) {
+        return false;
+    }
+    return std::any_of(std::begin(fields), std::end(fields), [&body](const char* field) {
+        return body.contains(field) && !body[field].is_null();
+    });
+}
+
 bool zbBodyLooksLikeHtml(const std::string& body) {
-    std::string lower = lowerCopy(body.substr(0, std::min<size_t>(body.size(), 2000)));
+    // After any amount of padding, so that a page cannot hide its first
+    // markup behind more than the sniffed window of spaces.
+    const size_t start = zbSkipDownloadPadding(body);
+    std::string lower = lowerCopy(body.substr(start, std::min<size_t>(body.size() - start, 2000)));
     return lower.find("<!doctype html") != std::string::npos ||
         lower.find("<html") != std::string::npos ||
         lower.find("<head") != std::string::npos ||
@@ -144,7 +195,8 @@ bool zbContentTypeIsHtml(const std::string& contentType) {
 }
 
 std::string zbMessageFromBody(const std::string& body, long statusCode) {
-    std::string trimmed = trimCopy(body);
+    // Padding (a byte order mark, NBSP) in front of the text is not part of it.
+    std::string trimmed = trimCopy(body.substr(zbSkipDownloadPadding(body)));
     if (trimmed.empty()) {
         return "Empty response from ZeroBounce (HTTP " + std::to_string(statusCode) + ")";
     }
@@ -426,12 +478,20 @@ static bool zbReadJsonBody(
     const std::string& body,
     const std::string& contentType,
     json& out,
+    ZbBodyRule rule,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
+    // A redirect is reported as such and not followed, as on the downloads.
+    if (statusCode >= 300 && statusCode < 400) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(kZbRedirectMessage, statusCode));
+        }
+        return false;
+    }
     // A text/html page is a proxy's or a portal's, not the API's answer, even
     // when its body happens to parse as JSON.
     if (statusCode > 299 || zbBodyLooksLikeHtml(body) || zbContentTypeIsHtml(contentType) ||
-        trimCopy(body).empty()) {
+        zbSkipDownloadPadding(body) == body.size()) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
@@ -456,23 +516,17 @@ static bool zbReadJsonBody(
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
-    return true;
-}
-
-static bool zbReadNonMessageJsonBody(
-    long statusCode,
-    const std::string& body,
-    const std::string& contentType,
-    json& out,
-    const std::function<void(ZBErrorResponse)>& errorCallback
-) {
-    if (!zbReadJsonBody(statusCode, body, contentType, out, errorCallback)) {
+    // LIVE: a typed call's 200 that is only a message ("Message", "message",
+    // "detail"), is empty ({}), or has a message beside fields that are all
+    // null is the API refusing, not a result: it used to come back as a zeroed
+    // struct. validate keeps a bare message (greylist processing answers
+    // {"Message": "Greylist validation still in progress..."}), and the raw
+    // JSON calls (filters, Inbox Placement, list evaluator) keep any object.
+    if (rule == ZbBodyRule::Typed && jsonMessageOnly(out)) {
+        zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
-    // LIVE: guessformat answers an invalid or drained key with an HTTP 200 and
-    // nothing but {"Message": "Invalid API key or your account ran out of
-    // credits"}, which used to come back as an empty result.
-    if (jsonMessageOnly(out)) {
+    if (rule == ZbBodyRule::TypedAllowMessage && out.is_object() && out.empty()) {
         zbReportHttpError(statusCode, body, errorCallback);
         return false;
     }
@@ -612,9 +666,30 @@ void zbAppendUtf8(std::string& out, unsigned long cp) {
     }
 }
 
-// text with JSON string escapes undone (\" \\ \/ \b \f \n \r \t \uXXXX,
-// surrogate pairs included); anything else is kept.
-std::string zbJsonUnescapeView(const std::string& text) {
+// The code point of a run of hex digits at text[at..], up to maxDigits (at
+// least minDigits), or -1. Stops at the first character that is not hex.
+long zbHexRun(const std::string& text, size_t at, size_t minDigits, size_t maxDigits, size_t& used) {
+    long value = 0;
+    size_t count = 0;
+    while (count < maxDigits && at + count < text.size()) {
+        const int digit = zbHexValue(text[at + count]);
+        if (digit < 0) {
+            break;
+        }
+        value = value * 16 + digit;
+        ++count;
+    }
+    used = count;
+    return count >= minDigits ? value : -1;
+}
+
+// text with string escapes undone: the JSON ones (\" \\ \/ \b \f \n \r \t
+// \uXXXX, surrogate pairs included), and the spellings other languages use for
+// the same character -- \u{27}, \U{27}, \U0027, \U00000027 and octal \047 --
+// that a body echoing a secret may have chosen. Anything else is kept.
+// wideU picks how a \U with no braces is read: eight hex digits (C and
+// Python), or four (some others); both views are tried.
+std::string zbJsonUnescapeView(const std::string& text, bool wideU = true) {
     std::string out;
     out.reserve(text.size());
     for (size_t i = 0; i < text.size(); ++i) {
@@ -631,13 +706,56 @@ std::string zbJsonUnescapeView(const std::string& text) {
             ++i;
             continue;
         }
-        long cp = next == 'u' ? zbHex4(text, i + 2) : -1;
+        if (next >= '0' && next <= '7') {
+            // Octal: up to three digits, a byte value of at most \377.
+            size_t digits = 0;
+            unsigned value = 0;
+            while (digits < 3 && i + 1 + digits < text.size() && text[i + 1 + digits] >= '0' &&
+                   text[i + 1 + digits] <= '7' && value * 8 + (text[i + 1 + digits] - '0') <= 0377) {
+                value = value * 8 + static_cast<unsigned>(text[i + 1 + digits] - '0');
+                ++digits;
+            }
+            out += static_cast<char>(value);
+            i += digits;
+            continue;
+        }
+        if (next != 'u' && next != 'U') {
+            out += text[i];
+            continue;
+        }
+        long cp = -1;
+        size_t consumed = 0;  // characters after the backslash
+        if (i + 2 < text.size() && text[i + 2] == '{') {
+            size_t used = 0;
+            const long value = zbHexRun(text, i + 3, 1, 6, used);
+            if (value >= 0 && value <= 0x10FFFF && i + 3 + used < text.size() && text[i + 3 + used] == '}') {
+                cp = value;
+                consumed = 3 + used;
+            }
+        } else {
+            size_t used = 0;
+            if (next == 'U' && wideU) {
+                const long value = zbHexRun(text, i + 2, 8, 8, used);
+                if (value >= 0 && value <= 0x10FFFF) {
+                    cp = value;
+                    consumed = 1 + 8;
+                }
+            }
+            if (cp < 0) {
+                const long value = zbHex4(text, i + 2);
+                if (value >= 0) {
+                    cp = value;
+                    consumed = 1 + 4;
+                }
+            }
+        }
         if (cp < 0) {
             out += text[i];
             continue;
         }
-        i += 5;
-        if (cp >= 0xD800 && cp <= 0xDBFF && i + 2 < text.size() && text[i + 1] == '\\' && text[i + 2] == 'u') {
+        i += consumed;
+        if (next == 'u' && consumed == 5 && cp >= 0xD800 && cp <= 0xDBFF && i + 2 < text.size() &&
+            text[i + 1] == '\\' && text[i + 2] == 'u') {
             long low = zbHex4(text, i + 3);
             if (low >= 0xDC00 && low <= 0xDFFF) {
                 cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
@@ -664,7 +782,8 @@ bool zbSecretInDecodedViews(const std::string& text, const std::string& secret, 
         return false;
     }
     for (const std::string& view :
-         {zbUrlDecodeView(text, false), zbUrlDecodeView(text, true), zbJsonUnescapeView(text)}) {
+         {zbUrlDecodeView(text, false), zbUrlDecodeView(text, true), zbJsonUnescapeView(text, true),
+          zbJsonUnescapeView(text, false)}) {
         if (view != text && zbSecretInDecodedViews(view, secret, layers - 1)) {
             return true;
         }
@@ -698,13 +817,84 @@ std::string zbRedactApiKey(std::string text, const std::string& apiKey) {
 
 const char* const kZbDirtyApiKeyMessage = "api_key has surrounding whitespace or control characters";
 
+namespace {
+
+// The next code point of a UTF-8 string, or -1 for a byte that does not start
+// a well-formed sequence (such a byte is not looked at further).
+long zbNextCodePoint(const std::string& text, size_t& at) {
+    const auto lead = static_cast<unsigned char>(text[at]);
+    size_t length = 1;
+    unsigned long cp = lead;
+    if (lead >= 0xF0 && lead <= 0xF4) {
+        length = 4;
+        cp = lead & 0x07;
+    } else if (lead >= 0xE0 && lead < 0xF0) {
+        length = 3;
+        cp = lead & 0x0F;
+    } else if (lead >= 0xC2 && lead < 0xE0) {
+        length = 2;
+        cp = lead & 0x1F;
+    } else if (lead >= 0x80) {
+        ++at;
+        return -1;
+    }
+    if (at + length > text.size()) {
+        ++at;
+        return -1;
+    }
+    for (size_t i = 1; i < length; ++i) {
+        const auto next = static_cast<unsigned char>(text[at + i]);
+        if ((next & 0xC0) != 0x80) {
+            ++at;
+            return -1;
+        }
+        cp = (cp << 6) | (next & 0x3F);
+    }
+    at += length;
+    return static_cast<long>(cp);
+}
+
+// Unicode whitespace (Zs, Zl, Zp), controls (Cc) and format characters (Cf):
+// code points that are invisible or that change how text reads, and that no
+// API key has.
+bool zbIsInvisibleOrSpace(long cp) {
+    struct Range {
+        long low;
+        long high;
+    };
+    static const Range ranges[] = {
+        {0x007F, 0x009F}, {0x00A0, 0x00A0}, {0x00AD, 0x00AD}, {0x0600, 0x0605}, {0x061C, 0x061C},
+        {0x06DD, 0x06DD}, {0x070F, 0x070F}, {0x0890, 0x0891}, {0x08E2, 0x08E2}, {0x1680, 0x1680},
+        {0x180E, 0x180E}, {0x2000, 0x200F}, {0x2028, 0x202F}, {0x205F, 0x206F}, {0x3000, 0x3000},
+        {0xFEFF, 0xFEFF}, {0xFFF9, 0xFFFB}, {0x110BD, 0x110BD}, {0x110CD, 0x110CD},
+        {0x13430, 0x1343F}, {0x1BCA0, 0x1BCA3}, {0x1D173, 0x1D17A}, {0xE0001, 0xE0001},
+        {0xE0020, 0xE007F},
+    };
+    return std::any_of(std::begin(ranges), std::end(ranges),
+        [cp](const Range& range) { return cp >= range.low && cp <= range.high; });
+}
+
+}  // namespace
+
 bool zbApiKeyIsClean(const std::string& apiKey) {
     if (apiKey != trimCopy(apiKey)) {
         return false;
     }
-    return std::none_of(apiKey.begin(), apiKey.end(), [](unsigned char c) {
-        return std::iscntrl(c) != 0;
-    });
+    for (size_t at = 0; at < apiKey.size();) {
+        const auto byte = static_cast<unsigned char>(apiKey[at]);
+        if (byte < 0x80) {
+            if (std::iscntrl(byte) != 0) {
+                return false;
+            }
+            ++at;
+            continue;
+        }
+        const long cp = zbNextCodePoint(apiKey, at);
+        if (cp >= 0 && zbIsInvisibleOrSpace(cp)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::string zbNormalizeBaseUrl(std::string url) {
@@ -714,19 +904,50 @@ std::string zbNormalizeBaseUrl(std::string url) {
     return url;
 }
 
+bool zbUrlHasUserinfo(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos) {
+        return false;
+    }
+    const auto end = url.find_first_of("/?#", scheme + 3);
+    const auto at = url.find('@', scheme + 3);
+    return at != std::string::npos && (end == std::string::npos || at < end);
+}
+
+bool zbUrlHasEmptyHost(const std::string& url) {
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos) {
+        return true;
+    }
+    const auto end = url.find_first_of("/?#", scheme + 3);
+    const std::string authority = url.substr(scheme + 3, end == std::string::npos ? end : end - scheme - 3);
+    // A host is what is in front of the port; an IPv6 host is in brackets.
+    return authority.empty() || authority.front() == ':';
+}
+
 bool zbCheckRequestUrl(
     const std::string& url,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
+    auto reject = [&errorCallback](const char* message) {
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(message));
+        }
+        return false;
+    };
     // The API key travels in the query string, a form field or a header, so a
     // plain-http URL would put it on the wire in the clear.
-    if (lowerCopy(url.substr(0, 8)) == "https://") {
-        return true;
+    if (lowerCopy(url.substr(0, 8)) != "https://") {
+        return reject("url must be an https:// URL");
     }
-    if (errorCallback) {
-        errorCallback(ZBErrorResponse::parseError("url must be an https:// URL"));
+    // The URL is not quoted: user:pass@ in it is a credential.
+    if (zbUrlHasUserinfo(url)) {
+        return reject("url must not contain a username or password");
     }
-    return false;
+    if (zbUrlHasEmptyHost(url)) {
+        return reject("url must be an https:// URL");
+    }
+    return true;
 }
 
 bool zbTransportFailed(const cpr::Response& response) {
@@ -770,11 +991,7 @@ bool zbReportTransportFailure(
     // No response, or only part of one: the connection was refused,
     // closed early, timed out or failed its TLS handshake.
     std::string message = zbTransportErrorMessage(response);
-    if (!apiKey.empty()) {
-        for (size_t at = 0; (at = message.find(apiKey, at)) != std::string::npos; at += 3) {
-            message.replace(at, apiKey.size(), "***");
-        }
-    }
+    message = zbRedactApiKey(std::move(message), apiKey);
     if (errorCallback) {
         // Status 0: no complete HTTP response arrived.
         errorCallback(ZBErrorResponse::parseError(message, 0));
@@ -788,26 +1005,24 @@ bool zbReadJsonResponse(
     json& out,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
+    return zbReadRuledJsonResponse(response, apiKey, out, ZbBodyRule::Raw, errorCallback);
+}
+
+bool zbReadRuledJsonResponse(
+    const cpr::Response& response,
+    const std::string& apiKey,
+    json& out,
+    ZbBodyRule rule,
+    const std::function<void(ZBErrorResponse)>& errorCallback
+) {
     // Checked before the body: a 200 cut short before its Content-Length (or
     // with a read timeout part-way) used to be a result whenever the part that
     // arrived happened to parse as JSON.
     if (zbReportTransportFailure(response, apiKey, errorCallback)) {
         return false;
     }
-    return zbReadJsonBody(response.status_code, response.text, zbResponseContentType(response), out, errorCallback);
-}
-
-bool zbReadNonMessageJsonResponse(
-    const cpr::Response& response,
-    const std::string& apiKey,
-    json& out,
-    const std::function<void(ZBErrorResponse)>& errorCallback
-) {
-    if (zbReportTransportFailure(response, apiKey, errorCallback)) {
-        return false;
-    }
-    return zbReadNonMessageJsonBody(
-        response.status_code, response.text, zbResponseContentType(response), out, errorCallback);
+    return zbReadJsonBody(
+        response.status_code, response.text, zbResponseContentType(response), out, rule, errorCallback);
 }
 
 bool zbReadShapedJsonResponse(
@@ -815,12 +1030,10 @@ bool zbReadShapedJsonResponse(
     const std::string& apiKey,
     json& out,
     ZbJsonShape shape,
-    bool nonMessage,
+    ZbBodyRule rule,
     const std::function<void(ZBErrorResponse)>& errorCallback
 ) {
-    const bool read = nonMessage ? zbReadNonMessageJsonResponse(response, apiKey, out, errorCallback)
-                                 : zbReadJsonResponse(response, apiKey, out, errorCallback);
-    if (!read) {
+    if (!zbReadRuledJsonResponse(response, apiKey, out, rule, errorCallback)) {
         return false;
     }
     if (shape == ZbJsonShape::Array ? !out.is_array() : !out.is_object()) {
@@ -846,8 +1059,7 @@ bool zbReportFailedDownload(
     }
     if (response.status_code >= 300 && response.status_code < 400) {
         if (errorCallback) {
-            errorCallback(ZBErrorResponse::parseError(
-                "ZeroBounce returned a redirect, which this client does not follow.", response.status_code));
+            errorCallback(ZBErrorResponse::parseError(kZbRedirectMessage, response.status_code));
         }
         return true;
     }
@@ -856,11 +1068,66 @@ bool zbReportFailedDownload(
 }
 
 bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentType) {
-    if (lowerCopy(contentType).find("application/json") != std::string::npos) {
+    std::string type = lowerCopy(contentType);
+    type = trimCopy(type.substr(0, type.find(';')));
+    if (type.find("application/json") != std::string::npos ||
+        (type.size() >= 5 && type.compare(type.size() - 5, 5, "+json") == 0)) {
         return true;
     }
-    auto first = std::find_if(body.begin(), body.end(), [](unsigned char c) { return !std::isspace(c); });
-    return first != body.end() && *first == '{';
+    // A result file never starts with "{" or "[" (a list of lists is not a
+    // CSV either), whatever padding or byte order mark is in front of it.
+    const size_t first = zbSkipDownloadPadding(body);
+    return first < body.size() && (body[first] == '{' || body[first] == '[');
+}
+
+std::string zbDownloadJsonMessage(const std::string& body, long statusCode) {
+    const size_t first = zbSkipDownloadPadding(body);
+    if (first < body.size() && body[first] == '[') {
+        try {
+            json parsed = json::parse(trimCopy(body.substr(first)));
+            std::string joined;
+            if (parsed.is_array()) {
+                for (const auto& item : parsed) {
+                    if (item.is_string() && !trimCopy(item.get<std::string>()).empty()) {
+                        if (!joined.empty()) {
+                            joined += "\n";
+                        }
+                        joined += trimCopy(item.get<std::string>());
+                    }
+                }
+            }
+            if (!joined.empty()) {
+                return joined;
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    return zbMessageFromBody(body, statusCode);
+}
+
+bool zbReportBadDownloadBody(
+    const cpr::Response& response,
+    const std::function<void(ZBErrorResponse)>& errorCallback,
+    const std::function<std::string(const std::string&)>& jsonMessage
+) {
+    const std::string& body = response.text;
+    const std::string contentType = zbResponseContentType(response);
+    if (zbSkipDownloadPadding(body) == body.size() || zbContentTypeIsHtml(contentType) ||
+        zbBodyLooksLikeHtml(body)) {
+        zbReportHttpError(response.status_code, body, errorCallback);
+        return true;
+    }
+    if (zbDownloadBodyIsJson(body, contentType)) {
+        // The API saying why there is no file, whatever its keys or content
+        // type: its message, not the raw body.
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError(
+                jsonMessage ? jsonMessage(body) : zbDownloadJsonMessage(body, response.status_code),
+                response.status_code));
+        }
+        return true;
+    }
+    return false;
 }
 
 bool zbSaveDownload(
@@ -905,8 +1172,16 @@ bool zbSaveDownload(
         fs::remove(tempPath, ec);
         return fail("Could not write " + localPath);
     }
-    // std::filesystem::rename replaces an existing file, on Windows too.
+    // Moved over the target in one step, so that the old file stays until the
+    // new one is ready. On Windows a plain rename does not replace an existing
+    // file, so the replacing move is asked for.
+#ifdef _WIN32
+    if (!MoveFileExW(tempPath.c_str(), filePath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    }
+#else
     fs::rename(tempPath, filePath, ec);
+#endif
     if (ec) {
         std::error_code ignored;
         fs::remove(tempPath, ignored);

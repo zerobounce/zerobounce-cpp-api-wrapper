@@ -11,6 +11,17 @@ endif()
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(ZeroBounce VERSION 3.0.1 LANGUAGES CXX)
 
+# True when this is the top-level project, false when another project pulls the
+# SDK in with FetchContent or add_subdirectory. PROJECT_IS_TOP_LEVEL needs CMake
+# 3.21; the minimum here is 3.20, so compare the directories there.
+if(DEFINED PROJECT_IS_TOP_LEVEL)
+  set(ZEROBOUNCE_IS_TOP_LEVEL ${PROJECT_IS_TOP_LEVEL})
+elseif(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(ZEROBOUNCE_IS_TOP_LEVEL ON)
+else()
+  set(ZEROBOUNCE_IS_TOP_LEVEL OFF)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -64,11 +75,13 @@ if(APPLE AND NOT CPR_USE_SYSTEM_CURL)
     set(USE_APPLE_SECTRUST ON CACHE BOOL "Use Apple OS-native certificate verification")
 endif()
 
-# Download and build libcpr
+# Download and build libcpr. GIT_TAG is the commit tag 1.11.2 points to
+# (git ls-remote https://github.com/libcpr/cpr.git refs/tags/1.11.2), so a moved
+# tag cannot change what is built.
 FetchContent_Declare(
     cpr
     GIT_REPOSITORY https://github.com/libcpr/cpr.git
-    GIT_TAG 1.11.2
+    GIT_TAG dd967cb48ea6bcbad9f1da5ada0db8ac0d532c06 # 1.11.2
 )
 # Download and build nlohmann_json. The hash is the SHA-256 the v3.11.2
 # release notes publish for json.tar.xz.
@@ -77,14 +90,8 @@ FetchContent_Declare(
     URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
     URL_HASH SHA256=8c4b26bf4b422252e13f332bc5e388ec0ab5c3443d24399acb675e68278d341f
 )
-# Download and build googletest
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.13.0
-)
 
-FetchContent_MakeAvailable(cpr nlohmann_json googletest)
+FetchContent_MakeAvailable(cpr nlohmann_json)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
@@ -95,14 +102,30 @@ target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 
 target_link_libraries(${PROJECT_NAME} PUBLIC cpr::cpr nlohmann_json::nlohmann_json)
 
-enable_testing()
-add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp
-    test/TransportTest.cpp)
-target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1
-    ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
-    ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
-    ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
+# googletest and the unit tests are only for building this repository. A project
+# that pulls the SDK in gets the library, not googletest or the ZeroBounceTests
+# target. GIT_TAG is the commit tag v1.13.0 points to
+# (git ls-remote https://github.com/google/googletest.git refs/tags/v1.13.0).
+if(ZEROBOUNCE_IS_TOP_LEVEL)
+    set(INSTALL_GTEST OFF CACHE BOOL "Install googletest with the SDK")
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG b796f7d44681514f58a683a3a71ff17c94edb0c1 # v1.13.0
+    )
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+    add_executable(ZeroBounceTests test/ZeroBounceTest.cpp test/OfflineApiTest.cpp test/OfflineWarmupTest.cpp
+        test/TransportTest.cpp)
+    target_compile_definitions(ZeroBounceTests PRIVATE ZB_OFFLINE_CURRENT=1
+        ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
+        ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
+        ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
+    include(GoogleTest)
+    gtest_add_tests(TARGET ZeroBounceTests)
+endif()
 
 # The live API suite is its own executable and is off by default, so a normal
 # build and CI never compile it and ctest never runs it. Build it with
@@ -113,5 +136,3 @@ if(ZEROBOUNCE_BUILD_LIVE_TESTS)
     add_executable(ZeroBounceLiveApi live/live_api.cpp)
     target_link_libraries(ZeroBounceLiveApi PRIVATE ${PROJECT_NAME})
 endif()
-include(GoogleTest)
-gtest_add_tests(TARGET ZeroBounceTests)

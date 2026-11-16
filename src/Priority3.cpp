@@ -209,13 +209,17 @@ void ZeroBounce::sendEmailFinderFile(
         return;
     }
     if (domainColumn < 1) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: domain_column"));
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: domain_column"));
+        }
         return;
     }
     // The upload needs a name to work from: one of first_name_column and
     // full_name_column is required, so neither being set is rejected here.
     if (options == nullptr || (options->firstNameColumn < 1 && options->fullNameColumn < 1)) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: first_name_column or full_name_column"));
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: first_name_column or full_name_column"));
+        }
         return;
     }
     bulkRootMultipart(
@@ -264,9 +268,8 @@ void ZeroBounce::emailFinderGetFile(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
-                || zbDownloadBodyIsJson(rsp, contentType)) {
-            zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
+        } else if (zbReportBadDownloadBody(reqResponse, outcome.errorSink())) {
+            // Not a file: empty, padding only, an HTML page or JSON.
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
             response.localFilePath = localDownloadPath;
@@ -298,7 +301,9 @@ void ZeroBounce::sendDomainSearchFile(
     OnErrorCallback errorCallback
 ) {
     if (domainColumn < 1) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: domain_column"));
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: domain_column"));
+        }
         return;
     }
     std::vector<std::pair<std::string, std::string>> fields{{"domain_column", std::to_string(domainColumn)}};
@@ -348,9 +353,8 @@ void ZeroBounce::domainSearchGetFile(
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
-        } else if (rsp.empty() || zbContentTypeIsHtml(contentType) || zbBodyLooksLikeHtml(rsp)
-                || zbDownloadBodyIsJson(rsp, contentType)) {
-            zbReportHttpError(reqResponse.status_code, rsp, outcome.errorSink());
+        } else if (zbReportBadDownloadBody(reqResponse, outcome.errorSink())) {
+            // Not a file: empty, padding only, an HTML page or JSON.
         } else if (zbSaveDownload(localDownloadPath, rsp, outcome.errorSink())) {
             ZBGetFileResponse response;
             response.localFilePath = localDownloadPath;
@@ -381,7 +385,9 @@ void ZeroBounce::sendListEvaluatorFile(
     OnErrorCallback errorCallback
 ) {
     if (emailAddressColumn < 1) {
-        errorCallback(ZBErrorResponse::parseError("Empty parameter: email_address_column"));
+        if (errorCallback) {
+            errorCallback(ZBErrorResponse::parseError("Empty parameter: email_address_column"));
+        }
         return;
     }
     bulkRootMultipart(

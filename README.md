@@ -87,12 +87,12 @@ ZeroBounce::getInstance()->getCredits(
 
 * ##### Check your API usage for a given period of time
 ```cpp
-std::tm startDate = {0};
+std::tm startDate{};
 startDate.tm_year = 118;
 startDate.tm_mon = 0;
 startDate.tm_mday = 1;
 
-std::tm endDate = {0};
+std::tm endDate{};
 endDate.tm_year = 123;
 endDate.tm_mon = 11;
 endDate.tm_mday = 12;

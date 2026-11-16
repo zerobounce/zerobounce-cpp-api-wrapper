@@ -268,13 +268,14 @@ class ZeroBounce {
          * @param urlPath         the url
          * @param successCallback the success callback
          * @param errorCallback   the error callback
+         * @param allowMessageOnly true for validate only: its greylist answer is a bare message
          */
         template <typename T>
         void sendRequest(
             std::string urlPath,
             OnSuccessCallback<T> successCallback,
             OnErrorCallback errorCallback,
-            bool messageOnlyIsFailure = false
+            bool allowMessageOnly = false
         );
 
         /**

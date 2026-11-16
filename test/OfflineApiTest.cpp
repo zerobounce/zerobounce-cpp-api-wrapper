@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ZeroBounce/ZeroBounce.h"
+#include "ZeroBounce/ZeroBounceWarmup.h"
 
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -1990,11 +1991,12 @@ class ScriptedApi : public BaseRequestHandler {
 public:
     std::string body;
     std::string contentType;
+    long status = 200;
 
 protected:
     cpr::Response reply() const {
         cpr::Response response;
-        response.status_code = 200;
+        response.status_code = status;
         response.text = body;
         response.header["Content-Type"] = contentType;
         return response;
@@ -2887,7 +2889,10 @@ TEST(OfflineApi, EveryJsonCallTakesOnlyStrictJson) {
             const bool emptyDelete = entry.body.empty() && call.name == "deleteInboxPlacementTest";
             // A typed call reads an object (listS3files an array): valid JSON
             // of another shape is an error with status 200 (E7).
-            const bool rightShape = !isTypedCall(call, raw) || hasTypedShape(call, entry.body);
+            // A typed call also refuses an empty object: it is not a result.
+            const bool emptyObject = entry.body.find_first_not_of(" \t\r\n{}") == std::string::npos &&
+                entry.body.find('{') != std::string::npos;
+            const bool rightShape = !isTypedCall(call, raw) || (hasTypedShape(call, entry.body) && !emptyObject);
             const bool success = !call.download && ((entry.accept && rightShape) || emptyDelete);
             api.requests = 0;
             int successes = 0;
@@ -4181,11 +4186,19 @@ TEST(OfflineApi, NullIsAcceptedForEveryNonRequiredField) {
     const std::string body =
         R"({"Credits":"7","address":"a@b.c","status":"valid","errors":[],"other_domain_formats":[],)"
         R"("email_batch":[{"address":"a@b.c","status":"valid")" + row + "}]" + top + "}";
+    // A file-status body needs one non-null status field of its own (an
+    // all-null one is not a status); the rest of the sweep stays null.
+    std::string statusBody = body;
+    for (size_t at = 0; (at = statusBody.find("\"file_id\":null", at)) != std::string::npos;) {
+        statusBody.replace(at, 14, "\"file_id\":\"f1\"");
+    }
     for (const auto& call : calls) {
         if (!isTypedCall(call, raw) || call.name == "listS3files") {
             continue;
         }
-        EXPECT_EQ(outcomeOf(call, api, body, path), 1) << call.name << " with " << body;
+        const bool status = call.name.find("ileStatus") != std::string::npos;
+        const std::string& sent = status ? statusBody : body;
+        EXPECT_EQ(outcomeOf(call, api, sent, path), 1) << call.name << " with " << sent;
     }
     EXPECT_EQ(outcomeOf(callNamed(calls, "listS3files"), api,
                         R"([{"name":null,"size":null,"last_modified":null}])", path), 1);
@@ -4218,4 +4231,404 @@ TEST(OfflineApi, EachHtmlSniffMarkerRejectsADownload) {
         EXPECT_FALSE(std::filesystem::exists(path)) << body;
     }
     std::filesystem::remove_all(dir);
+}
+
+// -- depth-first audit 1: behaviour fixes -----------------------------------
+
+namespace {
+
+/// A client with its own key over a scripted answer.
+class KeyedScriptedClient : public ZeroBounce {
+public:
+    KeyedScriptedClient(ScriptedApi& api, const std::string& key) {
+        initialize(key);
+        requestHandler = &api;
+    }
+};
+
+void writeTextFile(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+/// Every download call, as a lambda that runs it for the path with the two callbacks.
+std::vector<std::pair<std::string, std::function<void(ZeroBounce&, const std::string&,
+    OnSuccessCallback<ZBGetFileResponse>, OnErrorCallback)>>> downloadCalls() {
+    using Run = std::function<void(ZeroBounce&, const std::string&, OnSuccessCallback<ZBGetFileResponse>,
+                                   OnErrorCallback)>;
+    return {
+        {"getFile", Run([](ZeroBounce& c, const std::string& p, auto ok, auto err) { c.getFile("f", p, ok, err); })},
+        {"scoringGetFile",
+         Run([](ZeroBounce& c, const std::string& p, auto ok, auto err) { c.scoringGetFile("f", p, ok, err); })},
+        {"emailFinderGetFile",
+         Run([](ZeroBounce& c, const std::string& p, auto ok, auto err) { c.emailFinderGetFile("f", p, ok, err); })},
+        {"domainSearchGetFile",
+         Run([](ZeroBounce& c, const std::string& p, auto ok, auto err) { c.domainSearchGetFile("f", p, ok, err); })},
+    };
+}
+
+}  // namespace
+
+TEST(OfflineApi, HtmlBehindMoreThanTheSniffWindowOfPaddingIsNotAFile) {
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "text/csv";
+    const auto dir = freshTempDir("padded-html");
+    const std::string path = (dir / "out.csv").string();
+    const std::vector<std::string> pads{
+        std::string(2500, ' '), std::string(4095, ' '), std::string(5000, ' '), std::string(9000, ' '),
+        std::string(2500, '\t') + "\xEF\xBB\xBF" + std::string(2500, ' '), std::string(3000, ' ') + "\xC2\xA0\v\f"};
+    for (const auto& call : downloadCalls()) {
+        for (const auto& pad : pads) {
+            for (const char* page : {"<html><body>blocked</body></html>", "<!DOCTYPE html><title>x</title>"}) {
+                writeTextFile(path, "OLD");
+                api.body = pad + page;
+                int errors = 0;
+                call.second(client, path, [&](ZBGetFileResponse) { ADD_FAILURE() << call.first << " saved"; },
+                    [&](ZBErrorResponse error) {
+                        ++errors;
+                        EXPECT_EQ(error.statusCode, 200);
+                    });
+                EXPECT_EQ(errors, 1) << call.first << " pad " << pad.size();
+                EXPECT_EQ(readTextFile(path), "OLD") << call.first;
+                size_t files = 0;
+                for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                    (void)entry;
+                    ++files;
+                }
+                EXPECT_EQ(files, 1u) << call.first << " left a temp file";
+            }
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, ARealFileKeepsItsLeadingSpaces) {
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "text/csv";
+    const auto dir = freshTempDir("padded-csv");
+    const std::string path = (dir / "out.csv").string();
+    api.body = std::string(3000, ' ') + "email\na@example.com\n";
+    for (const auto& call : downloadCalls()) {
+        std::filesystem::remove(path);
+        bool saved = false;
+        call.second(client, path, [&](ZBGetFileResponse) { saved = true; },
+            [&](ZBErrorResponse error) { ADD_FAILURE() << call.first << ": " << error.toString(); });
+        EXPECT_TRUE(saved) << call.first;
+        EXPECT_EQ(readTextFile(path), api.body) << call.first;
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, JsonBehindAByteOrderMarkOrNbspIsTheApisAnswerNotAFile) {
+    ScriptedApi api;
+    ScriptedClient client(api);
+    const auto dir = freshTempDir("bom-json");
+    const std::string path = (dir / "out.csv").string();
+    struct Case {
+        std::string body;
+        std::string type;
+        std::string message;
+    };
+    const std::vector<Case> cases{
+        {"\xEF\xBB\xBF{\"message\":\"File not ready\"}", "text/csv", "File not ready"},
+        {"\xC2\xA0\xC2\xA0{\"Message\":\"File not ready\"}", "application/octet-stream", "File not ready"},
+        {"\xEF\xBB\xBF" + std::string(3000, ' ') + "{\"error\":\"File not ready\"}", "text/csv", "File not ready"},
+        {"[\"File not ready\"]", "text/csv", "File not ready"},
+        {"\xEF\xBB\xBF[\"File not ready\",\"Try later\"]", "text/csv", "File not ready\nTry later"},
+        {"{\"message\":\"File not ready\"}", "application/problem+json", "File not ready"},
+        {"File not ready", "application/problem+json", "File not ready"},
+    };
+    for (const auto& call : downloadCalls()) {
+        for (const auto& c : cases) {
+            writeTextFile(path, "OLD");
+            api.body = c.body;
+            api.contentType = c.type;
+            std::string message;
+            int errors = 0;
+            call.second(client, path, [&](ZBGetFileResponse) { ADD_FAILURE() << call.first << " saved " << c.body; },
+                [&](ZBErrorResponse error) {
+                    ++errors;
+                    message = error.errors.empty() ? "" : error.errors.front();
+                    EXPECT_EQ(error.statusCode, 200);
+                });
+            EXPECT_EQ(errors, 1) << call.first << " " << c.body;
+            EXPECT_EQ(message, c.message) << call.first << " " << c.body;
+            EXPECT_EQ(readTextFile(path), "OLD") << call.first;
+        }
+    }
+    EXPECT_TRUE(ZeroBounce::getFileJsonIndicatesError("\xEF\xBB\xBF{\"message\":\"x\"}"));
+    EXPECT_TRUE(ZeroBounce::getFileJsonIndicatesError("\xC2\xA0 {\"Error\":\"x\"}"));
+    EXPECT_TRUE(ZeroBounce::getFileJsonIndicatesError(std::string(5000, ' ') + "{\"success\":false}"));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AWhitespaceOnlyDownloadIsAnErrorAndKeepsTheFile) {
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "text/csv";
+    const auto dir = freshTempDir("blank-download");
+    const std::string path = (dir / "out.csv").string();
+    for (const auto& call : downloadCalls()) {
+        for (const std::string body : {std::string("   \n\t"), std::string("\xEF\xBB\xBF"), std::string("\xC2\xA0\xC2\xA0 "),
+                                       std::string(9000, ' ')}) {
+            writeTextFile(path, "OLD");
+            api.body = body;
+            int errors = 0;
+            call.second(client, path, [&](ZBGetFileResponse) { ADD_FAILURE() << call.first << " saved"; },
+                [&](ZBErrorResponse error) {
+                    ++errors;
+                    EXPECT_EQ(error.statusCode, 200);
+                });
+            EXPECT_EQ(errors, 1) << call.first << " " << body.size();
+            EXPECT_EQ(readTextFile(path), "OLD") << call.first;
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, AMessageOnlyOrEmptyOkBodyIsAnErrorOnTypedCalls) {
+    ScriptedApi api;
+    ScriptedClient client(api);
+    api.contentType = "application/json";
+    const auto dir = freshTempDir("message-only-typed");
+    const std::string upload = (dir / "in.csv").string();
+    writeTextFile(upload, "email\na@example.com\n");
+    auto fileStatus = [&] {
+        int ok = 0;
+        int err = 0;
+        client.fileStatus("f", [&](ZBFileStatusResponse) { ++ok; }, [&](ZBErrorResponse e) {
+            ++err;
+            EXPECT_EQ(e.statusCode, 200);
+        });
+        return std::make_pair(ok, err);
+    };
+    auto sendFile = [&] {
+        int ok = 0;
+        int err = 0;
+        client.sendFile(upload, 1, SendFileOptions{}, [&](ZBSendFileResponse) { ++ok; }, [&](ZBErrorResponse e) {
+            ++err;
+            EXPECT_EQ(e.statusCode, 200);
+        });
+        return std::make_pair(ok, err);
+    };
+    for (const char* body : {R"({"message":"m"})", R"({"Message":"m"})", R"({"detail":"m"})", "{}", "{ }", "{\n}",
+                             R"({"message":"m","file_id":null})", R"({"message":"Invalid domain","domain":null})"}) {
+        api.body = body;
+        EXPECT_EQ(fileStatus(), std::make_pair(0, 1)) << "fileStatus " << body;
+        EXPECT_EQ(sendFile(), std::make_pair(0, 1)) << "sendFile " << body;
+        int ok = 0;
+        int err = 0;
+        client.scoreEmail("a@b.c", [&](ZBScoreEmailResponse) { ++ok; }, [&](ZBErrorResponse) { ++err; });
+        client.scoreEmailPost("a@b.c", [&](ZBScoreEmailResponse) { ++ok; }, [&](ZBErrorResponse) { ++err; });
+        client.getActivityData("a@b.c", [&](ZBActivityDataResponse) { ++ok; }, [&](ZBErrorResponse) { ++err; });
+        client.deleteFile("f", [&](ZBDeleteFileResponse) { ++ok; }, [&](ZBErrorResponse) { ++err; });
+        EXPECT_EQ(std::make_pair(ok, err), std::make_pair(0, 4)) << body;
+    }
+    // Still results.
+    api.body = R"({"success":true,"message":"File Accepted"})";
+    EXPECT_EQ(sendFile(), std::make_pair(1, 0));
+    api.body = R"({"file_status":"Processing"})";
+    EXPECT_EQ(fileStatus(), std::make_pair(1, 0));
+    std::string status;
+    client.fileStatus("f", [&](ZBFileStatusResponse r) { status = r.fileStatus; }, nullptr);
+    EXPECT_EQ(status, "Processing");
+    for (const char* body : {R"({"foo":1})", R"({"":""})"}) {
+        api.body = body;
+        EXPECT_EQ(fileStatus(), std::make_pair(0, 1)) << body;
+    }
+    // A finder / domain-search body with only a null domain has no message: a result.
+    api.body = R"({"domain":null})";
+    int found = 0;
+    client.searchDomainByDomain("example.com", [&](ZBDomainSearchResponse) { ++found; },
+        [&](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(found, 1);
+    api.body = R"({"message":"Invalid domain","domain":null})";
+    int refused = 0;
+    client.searchDomainByDomain("example.com", [&](ZBDomainSearchResponse) { ADD_FAILURE(); },
+        [&](ZBErrorResponse) { ++refused; });
+    EXPECT_EQ(refused, 1);
+    // Greylist: validate's bare message is a result.
+    api.body = R"({"Message":"Greylist validation still in progress..."})";
+    int validated = 0;
+    ZBValidateOptions options;
+    options.greylistProcessing = true;
+    client.validate("a@b.c", "", options, [&](ZBValidateResponse) { ++validated; },
+        [&](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    options.usePost = true;
+    client.validate("a@b.c", "", options, [&](ZBValidateResponse) { ++validated; },
+        [&](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(validated, 2);
+    // Raw JSON calls keep any object.
+    api.body = "{}";
+    int raw = 0;
+    client.listFilters(false, [&](const std::string&) { ++raw; }, [&](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(raw, 1);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OfflineApi, ValidateOmitsIpAddressWhenNotGivenAndSendsActivityDataOnlyWhenSet) {
+    for (bool post : {false, true}) {
+        FakeApi api;
+        OfflineClient client(api, "validate-fields-key");
+        ZBValidateOptions options;
+        options.usePost = post;
+        client.validate("a@b.c", "", options, [](ZBValidateResponse) {}, [](ZBErrorResponse) {});
+        auto request = onlyRequest(api);
+        EXPECT_EQ(request.fields.count("ip_address"), 0u) << post;
+        EXPECT_EQ(request.fields.count("activity_data"), 0u) << post;
+        EXPECT_EQ(request.url.find("ip_address"), std::string::npos) << post;
+        EXPECT_EQ(request.body.find("ip_address"), std::string::npos) << post;
+        api.clear();
+        options.activityData = true;
+        client.validate("a@b.c", "203.0.113.9", options, [](ZBValidateResponse) {}, [](ZBErrorResponse) {});
+        request = onlyRequest(api);
+        EXPECT_EQ(request.fields["activity_data"], "true") << post;
+        EXPECT_EQ(request.fields["ip_address"], "203.0.113.9") << post;
+        // The field name is pinned on the wire.
+        const std::string wire = post ? request.body : request.url;
+        EXPECT_NE(wire.find("activity_data=true"), std::string::npos) << wire;
+    }
+}
+
+TEST(OfflineApi, AKeyEchoedInAnotherLanguagesEscapeIsStillMasked) {
+    const std::string key = "ab'cd";
+    for (const char* echo : {R"(ab\U0027cd)", R"(ab\u{27}cd)", R"(ab\U{27}cd)", R"(ab\U00000027cd)", R"(ab\047cd)",
+                             R"(ab\u0027cd)", R"(ab%5CU0027cd)", R"(ab%5Cu%7B27%7Dcd)", R"(ab%5C047cd)"}) {
+        ScriptedApi api;
+        api.contentType = "application/json";
+        // The echo sits inside a JSON string, its backslashes escaped.
+        std::string escaped;
+        for (const char* c = echo; *c != '\0'; ++c) {
+            escaped += *c;
+            if (*c == '\\') {
+                escaped += '\\';
+            }
+        }
+        api.body = std::string(R"({"error":"bad key )") + escaped + R"("})";
+        KeyedScriptedClient client(api, key);
+        std::string message;
+        client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); },
+            [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+        EXPECT_FALSE(message.empty()) << echo;
+        EXPECT_EQ(message.find("0027"), std::string::npos) << echo << " -> " << message;
+        EXPECT_EQ(message.find("047"), std::string::npos) << echo << " -> " << message;
+        EXPECT_EQ(message.find("27"), std::string::npos) << echo << " -> " << message;
+        EXPECT_EQ(message.find('\''), std::string::npos) << echo << " -> " << message;
+        EXPECT_EQ(message.find("ab"), std::string::npos) << echo << " -> " << message;
+    }
+}
+
+TEST(OfflineApi, ABaseUrlWithUserinfoOrNoHostSendsNothing) {
+    FakeApi api;
+    OfflineClient client(api, "userinfo-key");
+    for (const char* url : {"https://@bulk.example", "https://:@bulk.example", "https://user:pass@bulk.example/v2",
+                            "https://user@bulk.example?x=1"}) {
+        client.setBulkApiBaseUrl(url);
+        std::string message;
+        int errors = 0;
+        client.fileStatus("f", [](ZBFileStatusResponse) { ADD_FAILURE(); }, [&](ZBErrorResponse error) {
+            ++errors;
+            message = error.errors.empty() ? "" : error.errors.front();
+        });
+        EXPECT_EQ(errors, 1) << url;
+        EXPECT_EQ(message, "url must not contain a username or password") << url;
+        EXPECT_EQ(message.find("bulk.example"), std::string::npos) << url;
+        EXPECT_EQ(message.find("user:"), std::string::npos) << url;
+        EXPECT_EQ(message.find('@'), std::string::npos) << url;
+    }
+    EXPECT_EQ(api.size(), 0u);
+    for (const char* url : {"https://", "https:///v2", "https://?x"}) {
+        client.setBulkApiBaseUrl(url);
+        int errors = 0;
+        client.fileStatus("f", [](ZBFileStatusResponse) { ADD_FAILURE(); }, [&](ZBErrorResponse) { ++errors; });
+        EXPECT_EQ(errors, 1) << url;
+    }
+    EXPECT_EQ(api.size(), 0u);
+    // An '@' after the authority (in the query) is not userinfo; an IPv6 host is a host.
+    client.setBulkApiBaseUrl("https://[::1]:8443/v2");
+    client.fileStatus("f", [](ZBFileStatusResponse) {}, [](ZBErrorResponse) {});
+    EXPECT_EQ(api.size(), 1u);
+    // An '@' in the query is not userinfo.
+    client.setBulkApiBaseUrl("https://bulk.example/v2?email=a@b.c");
+    client.fileStatus("f", [](ZBFileStatusResponse) {}, [](ZBErrorResponse) {});
+    EXPECT_EQ(api.size(), 2u);
+    // Warmup rejects it before any request, with its own wording.
+    ZeroBounceWarmup warmup;
+    warmup.initialize("warmup-key", "https://user:pw@warmup.example");
+    std::string warmupMessage;
+    warmup.getSeeds([](const std::string&) { ADD_FAILURE(); },
+        [&](ZBErrorResponse error) { warmupMessage = error.errors.empty() ? "" : error.errors.front(); });
+    EXPECT_EQ(warmupMessage, "base_url must not contain a username or password");
+}
+
+TEST(OfflineApi, AKeyWithUnicodeWhitespaceOrInvisibleCharactersIsRefusedButAMidKeySpaceIsSent) {
+    for (const char* bad : {"ab\xC2\xA0" "cd", "ab\xEF\xBB\xBF" "cd", "ab\xE2\x80\x8B" "cd", "ab\xE2\x80\xAE" "cd",
+                            "ab\xE2\x81\xA6" "cd", "ab\xD8\x80" "cd", "ab\xE0\xA2\x90" "cd", "ab\xE0\xA2\x91" "cd",
+                            "ab\xC2\xAD" "cd", "ab\xEF\xBF\xB9" "cd", "ab\xF0\x9D\x85\xB3" "cd", "\xC2\xA0" "abcd",
+                            "ab\x01" "cd"}) {
+        FakeApi api;
+        OfflineClient client(api, bad);
+        std::string message;
+        client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); },
+            [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+        EXPECT_EQ(message, "api_key has surrounding whitespace or control characters") << bad;
+        EXPECT_EQ(api.size(), 0u) << bad;
+    }
+    FakeApi api;
+    OfflineClient client(api, "ab cd");
+    client.getCredits([](ZBCreditsResponse) {}, [](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(onlyRequest(api).apiKey, "ab cd");
+    // A key with an accented letter is not whitespace.
+    api.clear();
+    OfflineClient accented(api, "caf\xC3\xA9");
+    accented.getCredits([](ZBCreditsResponse) {}, [](ZBErrorResponse e) { ADD_FAILURE() << e.toString(); });
+    EXPECT_EQ(onlyRequest(api).apiKey, "caf\xC3\xA9");
+}
+
+TEST(OfflineApi, AJsonCallReportsARedirectAndAMissingErrorCallbackDoesNotThrow) {
+    ScriptedApi api;
+    api.status = 302;
+    api.contentType = "text/html";
+    api.body = "<html>moved</html>";
+    ScriptedClient client(api);
+    std::string message;
+    long status = 0;
+    client.getCredits([](ZBCreditsResponse) { ADD_FAILURE(); }, [&](ZBErrorResponse error) {
+        message = error.errors.empty() ? "" : error.errors.front();
+        status = error.statusCode;
+    });
+    EXPECT_EQ(message, "ZeroBounce returned a redirect, which this client does not follow.");
+    EXPECT_EQ(status, 302);
+    int raw = 0;
+    client.listFilters(false, [&](const std::string&) { ADD_FAILURE(); }, [&](ZBErrorResponse error) {
+        ++raw;
+        EXPECT_EQ(error.statusCode, 302);
+    });
+    EXPECT_EQ(raw, 1);
+    // A null error callback is skipped, not called.
+    OnErrorCallback none;
+    ZBValidateOptions options;
+    options.callbackUrl = "https://example.com/hook";
+    EXPECT_NO_THROW(client.validate("a@b.c", "", options, [](ZBValidateResponse) {}, none));
+    options.greylistProcessing = true;
+    options.callbackUrl = "   ";
+    EXPECT_NO_THROW(client.validate("a@b.c", "", options, [](ZBValidateResponse) {}, none));
+    EXPECT_NO_THROW(client.sendEmailFinderFile("x.csv", 0, nullptr, [](ZBSendFileResponse) {}, none));
+    EmailFinderSendFileOptions finder;
+    EXPECT_NO_THROW(client.sendEmailFinderFile("x.csv", 1, &finder, [](ZBSendFileResponse) {}, none));
+    EXPECT_NO_THROW(client.sendDomainSearchFile("x.csv", 0, nullptr, [](ZBSendFileResponse) {}, none));
+    EXPECT_NO_THROW(client.sendListEvaluatorFile("x.csv", 0, [](ZBSendFileResponse) {}, none));
+    ScriptedApi quiet;
+    KeyedScriptedClient empty(quiet, "");
+    EXPECT_NO_THROW(empty.getCredits([](ZBCreditsResponse) {}, none));
+    ZBValidateError item;
+    item.error = "e";
+    EXPECT_EQ(item.toString().rfind("ZBValidateError{", 0), 0u);
 }

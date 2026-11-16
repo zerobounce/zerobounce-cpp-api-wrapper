@@ -24,12 +24,6 @@ std::string trimmed(const std::string& value) {
     return value.substr(first, last - first + 1);
 }
 
-bool hasControlCharacters(const std::string& value) {
-    return std::any_of(value.begin(), value.end(), [](unsigned char c) {
-        return std::iscntrl(c) != 0;
-    });
-}
-
 std::string urlEncode(const std::string& value) {
     static const char* hex = "0123456789ABCDEF";
     std::string out;
@@ -82,7 +76,7 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
     }
     // A key with surrounding whitespace or control characters would be quoted,
     // unredacted, in the HTTP library's own error.
-    if (key != trimmed(key) || hasControlCharacters(key)) {
+    if (key != trimmed(key) || !zbApiKeyIsClean(key)) {
         initializeError = "api_key has surrounding whitespace or control characters";
         return;
     }
@@ -96,6 +90,15 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
     // rather than dropped: a caller that only ever looked at initialize() used
     // to get no signal at all.
     if (lower.rfind("https://", 0) != 0) {
+        initializeError = "base_url must be an https:// URL";
+        return;
+    }
+    // The URL is not quoted: user:pass@ in it is a credential.
+    if (zbUrlHasUserinfo(base)) {
+        initializeError = "base_url must not contain a username or password";
+        return;
+    }
+    if (zbUrlHasEmptyHost(base)) {
         initializeError = "base_url must be an https:// URL";
         return;
     }
@@ -160,7 +163,7 @@ bool warmupReady(
         reportError(errorCallback, "api_key is required");
         return false;
     }
-    if (apiKey != trimmed(apiKey) || hasControlCharacters(apiKey)) {
+    if (apiKey != trimmed(apiKey) || !zbApiKeyIsClean(apiKey)) {
         reportError(errorCallback, "api_key has surrounding whitespace or control characters");
         return false;
     }
@@ -301,16 +304,12 @@ bool warmupCsv(
     if (!warmupSend(zb, "GET", url, nullptr, {}, result, errorCallback)) {
         return false;
     }
-    std::string lowerType = result.contentType;
-    std::transform(lowerType.begin(), lowerType.end(), lowerType.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    // An error comes back labelled as JSON or HTML, so it is not a file: an
-    // empty body, a JSON or HTML content type, a JSON object or array, or an
-    // HTML page.
-    const std::string body = trimmed(result.body);
-    if (body.empty() || body.front() == '{' || body.front() == '[' ||
-        lowerType.find("application/json") != std::string::npos ||
+    // An error comes back labelled as JSON (application/json or +json) or
+    // HTML, so it is not a file: an empty body, a JSON content type, a JSON
+    // object or array, or an HTML page. Padding (a byte order mark, NBSP, any
+    // run of whitespace) in front of the text does not hide it.
+    const std::string body = trimmed(result.body.substr(zbSkipDownloadPadding(result.body)));
+    if (body.empty() || zbDownloadBodyIsJson(result.body, result.contentType) ||
         zbContentTypeIsHtml(result.contentType) || zbBodyLooksLikeHtml(result.body)) {
         reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), {},
             result.statusCode);

@@ -1,5 +1,5 @@
-#ifndef UTILS_H
-#define UTILS_H
+#ifndef ZEROBOUNCE_UTILS_H
+#define ZEROBOUNCE_UTILS_H
 
 #include <stdexcept>
 #include <string>

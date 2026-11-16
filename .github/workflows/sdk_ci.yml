@@ -33,6 +33,57 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
+      - name: Build as a FetchContent consumer
+        # A project that pulls this repository in with FetchContent links the
+        # library only: it must not fetch googletest or define the test target.
+        # The parent build's _deps are reused so nothing is downloaded twice.
+        run: |
+          deps="$GITHUB_WORKSPACE/build/_deps"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer"
+          cat > "$consumer/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(ZeroBounceConsumer LANGUAGES CXX)
+          include(FetchContent)
+          FetchContent_Declare(zerobounce GIT_REPOSITORY https://example.invalid/zerobounce.git)
+          FetchContent_MakeAvailable(zerobounce)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE ZeroBounce)
+          EOF
+          cat > "$consumer/main.cpp" <<'EOF'
+          #include "ZeroBounce/ZeroBounce.h"
+
+          int main() {
+              ZeroBounce *(*instance)() = &ZeroBounce::getInstance;
+              return instance == nullptr;
+          }
+          EOF
+          cmake -S "$consumer" -B "$consumer/build" -G "Unix Makefiles" \
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+            -DFETCHCONTENT_SOURCE_DIR_ZEROBOUNCE="$GITHUB_WORKSPACE" \
+            -DFETCHCONTENT_SOURCE_DIR_CURL="$deps/curl-src" \
+            -DFETCHCONTENT_SOURCE_DIR_CPR="$deps/cpr-src" \
+            -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON="$deps/nlohmann_json-src"
+          cmake --build "$consumer/build" --target consumer
+          # Look for the cache entry of a FetchContent_MakeAvailable of googletest:
+          # it exists only when the library's top-level guard is gone.
+          if [ ! -f "$consumer/build/CMakeCache.txt" ]; then
+            echo "::error::The FetchContent consumer has no CMakeCache.txt."
+            exit 1
+          fi
+          if grep -E 'FETCHCONTENT_SOURCE_DIR_GOOGLETEST' "$consumer/build/CMakeCache.txt"; then
+            echo "::error::A FetchContent consumer fetched googletest."
+            exit 1
+          fi
+          if ! targets=$(cmake --build "$consumer/build" --target help); then
+            echo "::error::cmake --build --target help failed in the FetchContent consumer."
+            exit 1
+          fi
+          if printf '%s\n' "$targets" | grep -E 'ZeroBounceTests'; then
+            echo "::error::A FetchContent consumer defines a test target."
+            exit 1
+          fi
+
   test-min-cmake:
     # Builds and tests with the oldest CMake the project supports, matching
     # cmake_minimum_required(VERSION 3.20) in CMakeLists.txt (ctest --test-dir
