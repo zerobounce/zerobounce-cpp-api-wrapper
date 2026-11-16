@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-17
+
 ### Upgrading
 
 This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of source may need a look:
@@ -328,7 +330,8 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 
 - Initial release: `getCredits`, `getApiUsage`, `validate`, `validateBatch`, bulk and AI-scoring file methods, `getActivityData`, and `findEmail`.
 
-[Unreleased]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v3.0.1...v4.0.0
 [3.0.1]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/zerobounce/zerobounce-cpp-api-wrapper/compare/v2.1.4...v2.2.0
