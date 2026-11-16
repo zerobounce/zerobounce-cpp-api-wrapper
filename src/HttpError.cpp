@@ -982,7 +982,12 @@ std::string zbMaskSecret(std::string text, const std::string& secret) {
     return text;
 }
 
+void (*zbSecureWipeObserver)(const std::string&) = nullptr;
+
 void zbSecureWipe(std::string& secret) {
+    if (zbSecureWipeObserver) {
+        zbSecureWipeObserver(secret);
+    }
     // The whole buffer, not only size(): a string that was longer once, or
     // grew by += into a new buffer, keeps bytes past the end.
     secret.resize(secret.capacity());

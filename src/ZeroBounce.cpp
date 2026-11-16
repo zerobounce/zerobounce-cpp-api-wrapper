@@ -297,30 +297,31 @@ void ZeroBounce::validate(
     if (options.usePost) {
         ZbSecretUrl form;
         form << "api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
-        std::string body = form.take();
-        ZbWipeGuard wipeBody(body);
         // An empty ip_address= is not the same as leaving it out.
         if (!ipAddress.empty()) {
-            body += "&ip_address=" + urlEncode(ipAddress);
+            form << "&ip_address=" + urlEncode(ipAddress);
         }
         if (options.timeout.has_value()) {
-            body += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
+            form << "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
         }
         if (options.activityData.has_value()) {
-            body += "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
+            form << "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
         }
         if (options.verifyPlus.has_value()) {
-            body += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+            form << "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
         }
         if (options.domainInfo.has_value()) {
-            body += "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
+            form << "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
         }
         if (options.greylistProcessing.has_value()) {
-            body += "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
+            form << "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
         }
         if (options.callbackUrl.has_value()) {
-            body += "&callback_url=" + urlEncode(options.callbackUrl.value());
+            form << "&callback_url=" + urlEncode(options.callbackUrl.value());
         }
+        // Built to the end inside ZbSecretUrl (which wipes when it grows), then moved out.
+        std::string body = form.take();
+        ZbWipeGuard wipeBody(body);
         if (!zbCheckRequestUrl(apiBaseUrl, errorCallback)) return;
         ZBOutcome<ZBValidateResponse> outcome(apiKey);
         try {
@@ -345,29 +346,30 @@ void ZeroBounce::validate(
 
     ZbSecretUrl urlBuilder;
     urlBuilder << apiBaseUrl << "/validate?api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
-    std::string url = urlBuilder.take();
-    ZbWipeGuard wipeUrl(url);
     if (!ipAddress.empty()) {
-        url += "&ip_address=" + urlEncode(ipAddress);
+        urlBuilder << "&ip_address=" + urlEncode(ipAddress);
     }
     if (options.timeout.has_value()) {
-        url += "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
+        urlBuilder << "&timeout=" + urlEncode(std::to_string(options.timeout.value()));
     }
     if (options.activityData.has_value()) {
-        url += "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
+        urlBuilder << "&activity_data=" + urlEncode(options.activityData.value() ? "true" : "false");
     }
     if (options.verifyPlus.has_value()) {
-        url += "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
+        urlBuilder << "&verify_plus=" + urlEncode(options.verifyPlus.value() ? "true" : "false");
     }
     if (options.domainInfo.has_value()) {
-        url += "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
+        urlBuilder << "&domain_info=" + urlEncode(options.domainInfo.value() ? "true" : "false");
     }
     if (options.greylistProcessing.has_value()) {
-        url += "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
+        urlBuilder << "&greylist_processing=" + urlEncode(options.greylistProcessing.value() ? "true" : "false");
     }
     if (options.callbackUrl.has_value()) {
-        url += "&callback_url=" + urlEncode(options.callbackUrl.value());
+        urlBuilder << "&callback_url=" + urlEncode(options.callbackUrl.value());
     }
+
+    std::string url = urlBuilder.take();
+    ZbWipeGuard wipeUrl(url);
 
     // A bare {"Message": ...} is a result for validate (greylist processing).
     sendRequest(url, successCallback, errorCallback, true);

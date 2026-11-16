@@ -235,6 +235,9 @@ std::string zbMaskSecret(std::string text, const std::string& secret);
  */
 void zbSecureWipe(std::string& secret);
 
+/** Test seam: when set, called with the text of every string zbSecureWipe is about to overwrite. */
+extern void (*zbSecureWipeObserver)(const std::string&);
+
 /** Wipes the string it was given when it goes out of scope. */
 class ZbWipeGuard {
 public:
@@ -268,7 +271,8 @@ public:
      * over has it taken out, whatever built the message: a body quoting the
      * key or the request URL, a transport error or an exception.
      */
-    explicit ZBOutcome(std::string apiKey) : apiKey_(std::move(apiKey)) {}
+    // A copy, not a move: a moved-from parameter can keep a short (SSO) key.
+    explicit ZBOutcome(const std::string& apiKey) : apiKey_(apiKey) {}
     ZBOutcome(const ZBOutcome&) = delete;
     ZBOutcome& operator=(const ZBOutcome&) = delete;
     /** The key copy is overwritten when the outcome goes out of scope. */

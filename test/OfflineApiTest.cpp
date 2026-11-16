@@ -5089,3 +5089,79 @@ TEST(OfflineApi, AnErrorBodyWithNoMessageKeyGetsTheFixedTextOnTypedCalls) {
               std::vector<std::string>{"Invalid API key"});
     EXPECT_EQ(ZBErrorResponse::parseError("{}").errors, std::vector<std::string>{fixed});
 }
+
+// ---- an error body keeps its own text on the non-2xx path -------------------
+
+TEST(OfflineApi, ParseErrorKeepsAJsonStringAndAnyNonObjectBodyAsText) {
+    // A JSON string is its own message, unquoted.
+    EXPECT_EQ(ZBErrorResponse::parseError(R"("Invalid API key")", 401).errors, std::vector<std::string>{"Invalid API key"});
+    // A number, an array or a literal has no fields: the body is the text.
+    for (const char* body : {"404", R"(["a","b"])", "[1,2]", "true", "null"}) {
+        EXPECT_EQ(ZBErrorResponse::parseError(body, 500).errors, std::vector<std::string>{body}) << body;
+    }
+    // Only an object with no message text gets the fixed text.
+    const std::string fixed = "ZeroBounce returned an error with no message text.";
+    EXPECT_EQ(ZBErrorResponse::parseError(R"({"title":"Too Many Requests","status":429})", 429).errors,
+              std::vector<std::string>{fixed});
+    EXPECT_EQ(ZBErrorResponse::parseError(R"({"title":"Too Many Requests","status":429})", 429).statusCode, 429);
+}
+
+TEST(OfflineApi, NonSuccessBodiesWithoutAMessageFieldKeepTheirText) {
+    struct Case { const char* body; long status; const char* expected; };
+    const Case cases[] = {
+        {R"("Invalid API key")", 401, "Invalid API key"},
+        {"404", 404, "404"},
+        {"[1,2]", 500, "[1,2]"},
+        {R"({"title":"Too Many Requests","status":429})", 429, "ZeroBounce returned an error with no message text."},
+        {"", 404, "Empty response from ZeroBounce (HTTP 404)"},
+        {"not found", 404, "not found"},
+    };
+    for (const auto& c : cases) {
+        std::vector<std::string> errors;
+        long status = 0;
+        zbReportHttpError(c.status, c.body, [&](ZBErrorResponse e) { errors = e.errors; status = e.statusCode; });
+        ASSERT_EQ(errors.size(), 1u) << c.body;
+        EXPECT_EQ(errors[0], c.expected) << c.body;
+        EXPECT_EQ(status, c.status) << c.body;
+    }
+}
+
+// ---- the key is never left in a buffer that grew ---------------------------
+
+namespace {
+std::vector<std::string> gWiped;
+void recordWiped(const std::string& text) { gWiped.push_back(text); }
+}  // namespace
+
+TEST(OfflineApi, ValidateWipesTheBufferHoldingTheKeyWhenLongOptionsGrowIt) {
+    for (bool usePost : {false, true}) {
+        ScriptedApi api;
+        api.contentType = "application/json";
+        api.body = R"({"address":"a@b.c","status":"valid"})";
+        ScriptedClient client(api);
+        ZBValidateOptions options;
+        options.usePost = usePost;
+        gWiped.clear();
+        zbSecureWipeObserver = &recordWiped;
+        // Short email, long ip_address: the text passes 4096 bytes only after
+        // the options are added.
+        client.validate("a@b.c", std::string(5000, '1'), options, [](ZBValidateResponse) {}, [](ZBErrorResponse) {});
+        zbSecureWipeObserver = nullptr;
+        bool smallerBufferWiped = false;
+        for (const auto& text : gWiped) {
+            if (text.find("api_key=scripted-key") != std::string::npos && text.size() <= 4096 &&
+                text.find("ip_address") == std::string::npos) {
+                smallerBufferWiped = true;
+            }
+        }
+        EXPECT_TRUE(smallerBufferWiped) << (usePost ? "POST" : "GET");
+    }
+}
+
+TEST(OfflineApi, OutcomeCopiesItsKeyRatherThanMovingFromTheArgument) {
+    std::ifstream in(std::string(ZB_SOURCE_DIR) + "/HttpError.h");
+    ASSERT_TRUE(in.good());
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    EXPECT_NE(buffer.str().find("explicit ZBOutcome(const std::string& apiKey) : apiKey_(apiKey)"), std::string::npos);
+}

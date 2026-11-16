@@ -746,24 +746,34 @@ TEST(TransportHandler, LibcurlUsesNoSignals) {
 #endif
 }
 
+namespace {
+std::vector<long> gNoSignalValues;
+void recordNoSignal(long value) { gNoSignalValues.push_back(value); }
+}  // namespace
+
 TEST(TransportHandler, EveryRequestSetsNoSignalOnItsOwnHandle) {
     // The SDK sets CURLOPT_NOSIGNAL itself, so a system cpr cannot drop it.
-    // The option cannot be read back from a handle, so check the one place
-    // the handlers send from: no direct cpr::Get/Post/Put/Delete call is left
-    // in the public header, and the helper they go through sets the option.
-    std::ifstream in(ZB_PUBLIC_HEADER);
-    ASSERT_TRUE(in.good());
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    const std::string header = buffer.str();
-    for (const char* verb : {"cpr::Get(", "cpr::Post(", "cpr::Put(", "cpr::Delete("}) {
-        EXPECT_EQ(header.find(verb), std::string::npos) << verb;
+    // libcurl cannot read the option back, so the test seam reports the value
+    // given to it for each request (nothing listens on 127.0.0.1:1).
+    gNoSignalValues.clear();
+    zbdetail::noSignalObserver().store(&recordNoSignal);
+    RequestHandler handler(2000, 2000);
+    const cpr::Url url{"http://127.0.0.1:1/x"};
+    const cpr::Header header{{"a", "b"}};
+    const cpr::Body body{"{}"};
+    handler.Get(url);
+    handler.Get(url, header);
+    handler.getWithParameters(url, cpr::Parameters{{"k", "v"}});
+    handler.Post(url, header, body);
+    handler.Post(url, header, cpr::Multipart{{"f", "v"}});
+    handler.Put(url, header, body);
+    handler.Delete(url, header);
+    handler.Delete(url, header, body);
+    zbdetail::noSignalObserver().store(nullptr);
+    ASSERT_EQ(gNoSignalValues.size(), 8u);
+    for (long value : gNoSignalValues) {
+        EXPECT_EQ(value, 1L);
     }
-    const auto helper = header.find("performNoSignal(Method method");
-    ASSERT_NE(helper, std::string::npos);
-    const auto end = header.find("}  // namespace zbdetail", helper);
-    ASSERT_NE(end, std::string::npos);
-    EXPECT_NE(header.substr(helper, end - helper).find("CURLOPT_NOSIGNAL"), std::string::npos);
 }
 
 TEST(TransportDownload, AJsonErrorBodyWithNoMessageIsNotReportedWhole) {

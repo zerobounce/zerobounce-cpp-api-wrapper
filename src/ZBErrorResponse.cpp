@@ -47,6 +47,17 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
 
     try {
         json hashMap = json::parse(error);
+        if (hashMap.is_string()) {
+            // A JSON string body is its own message.
+            response.errors = {hashMap.get<std::string>()};
+            return response;
+        }
+        if (!hashMap.is_object()) {
+            // A number, an array, true/false/null: no fields to read, so the
+            // body itself is the text (the callers cap it).
+            response.errors = {error};
+            return response;
+        }
         for (auto& entry : hashMap.items()) {
             std::string key = entry.key();
             std::transform(key.begin(), key.end(), key.begin(),

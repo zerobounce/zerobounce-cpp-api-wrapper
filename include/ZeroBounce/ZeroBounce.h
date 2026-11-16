@@ -1,6 +1,7 @@
 #ifndef ZEROBOUNCE_H
 #define ZEROBOUNCE_H
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -127,11 +128,24 @@ namespace zbdetail {
  * multi-threaded program), and a cpr built without CPR_CURL_NOSIGNAL (a system
  * copy, say) would leave it off.
  */
+/**
+ * Test seam: when set, called with the value given to CURLOPT_NOSIGNAL for
+ * every request (libcurl cannot read the option back from a handle).
+ */
+inline std::atomic<void (*)(long)>& noSignalObserver() {
+    static std::atomic<void (*)(long)> observer{nullptr};
+    return observer;
+}
+
 template <typename Method, typename... Ts>
 cpr::Response performNoSignal(Method method, Ts&&... ts) {
     cpr::Session session;
-    cpr::priv::set_option(session, std::forward<Ts>(ts)...);
-    curl_easy_setopt(session.GetCurlHolder()->handle, CURLOPT_NOSIGNAL, 1L);
+    (session.SetOption(std::forward<Ts>(ts)), ...);
+    const long noSignal = 1L;
+    curl_easy_setopt(session.GetCurlHolder()->handle, CURLOPT_NOSIGNAL, noSignal);
+    if (auto observer = noSignalObserver().load()) {
+        observer(noSignal);
+    }
     return method(session);
 }
 }  // namespace zbdetail
