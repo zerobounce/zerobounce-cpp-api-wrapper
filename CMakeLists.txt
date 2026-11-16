@@ -13,7 +13,8 @@ project(ZeroBounce VERSION 3.0.1 LANGUAGES CXX)
 
 # True when this is the top-level project, false when another project pulls the
 # SDK in with FetchContent or add_subdirectory. PROJECT_IS_TOP_LEVEL needs CMake
-# 3.21; the minimum here is 3.20, so compare the directories there.
+# 3.21. The declared minimum is 3.20; CI tests 3.20.2, the oldest 3.20 on PyPI,
+# so compare the directories there.
 if(DEFINED PROJECT_IS_TOP_LEVEL)
   set(ZEROBOUNCE_IS_TOP_LEVEL ${PROJECT_IS_TOP_LEVEL})
 elseif(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -95,6 +96,11 @@ FetchContent_MakeAvailable(cpr nlohmann_json)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
+# The shared library's file name carries the project version, and SOVERSION is the
+# major version, so a release that changes the major version changes the ABI name.
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
 target_include_directories(${PROJECT_NAME} PUBLIC include)
 # The library builds as C++20 (CMAKE_CXX_STANDARD above); code that includes
 # its headers needs C++17, which this passes on to every target linking it.

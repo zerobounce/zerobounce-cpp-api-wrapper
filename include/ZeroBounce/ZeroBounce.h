@@ -51,11 +51,6 @@ struct SendFileOptions {
     /** When set, sent as allow_phase_2 on validation sendFile only (not scoringSendFile). */
     bool allowPhase2IsSet = false;
     bool allowPhase2 = false;
-    /**
-     * No longer needed and ignored: removeDuplicate is always sent. Kept,
-     * last, so code that sets it keeps compiling.
-     */
-    bool removeDuplicateSet = false;
 };
 
 /** Bulk getfile download_type query values (validation and scoring). */
@@ -893,8 +888,10 @@ class ZeroBounce {
         );
 
         // The base URL setters below strip trailing slashes. Every request is
-        // HTTPS only: a call whose URL is not https:// reports
+        // HTTPS only: a call whose URL is not https://, or has no host, reports
         // "url must be an https:// URL" to its error callback and sends nothing.
+        // A URL with a username or password (https://user:pass@host) is refused
+        // the same way, with "url must not contain a username or password".
 
         /** Override the list evaluator base URL. */
         void setListEvaluatorBaseUrl(const std::string& url);

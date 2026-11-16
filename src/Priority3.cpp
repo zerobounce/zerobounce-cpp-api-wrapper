@@ -264,7 +264,6 @@ void ZeroBounce::emailFinderGetFile(
     try {
         cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
-        std::string contentType = reqResponse.header["Content-Type"];
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.
@@ -349,7 +348,6 @@ void ZeroBounce::domainSearchGetFile(
     try {
         cpr::Response reqResponse = requestHandler->Get(cpr::Url{url});
         std::string rsp = reqResponse.text;
-        std::string contentType = reqResponse.header["Content-Type"];
         if (zbReportFailedDownload(reqResponse, apiKey, outcome.errorSink())) {
             // Nothing is written for a transport failure, a body cut short, a
             // redirect or an HTTP error.

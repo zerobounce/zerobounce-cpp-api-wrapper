@@ -901,6 +901,52 @@ TEST(OfflineWarmup, CsvDownloadsRejectEveryNonFileAnswer) {
     }
 }
 
+TEST(OfflineWarmup, ACsvDownloadJsonErrorWithNoMessageIsAFixedSentence) {
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    const std::vector<std::pair<std::string, std::string>> answers{
+        {R"({"file_id":"secret-token-1"})", "ZeroBounce returned a JSON error instead of a file."},
+        {"[1,2]", "ZeroBounce returned a JSON error instead of a file."},
+        {"secret-token-1 is not json", "ZeroBounce returned a response that is not valid JSON."},
+        {R"({"message":"No seeds"})", "No seeds"},
+    };
+    for (const auto& [body, expected] : answers) {
+        api.replyWith(200, "application/json", body);
+        std::string message;
+        client.downloadSeeds([](std::string) { FAIL() << "success"; },
+                             [&](ZBErrorResponse error) { message = error.errors.empty() ? "" : error.errors.front(); });
+        EXPECT_EQ(message, expected) << body;
+        api.take();
+    }
+}
+
+TEST(OfflineWarmup, AnHtmlPageBehindMoreThanTheSniffWindowOfSpacesIsNotACsv) {
+    // The page starts after more than 2000 spaces, past the sniffed window:
+    // still an error with the status, and the body never reaches the success
+    // callback. Both CSV downloads.
+    FakeWarmupApi api;
+    OfflineWarmupClient client(api);
+    for (int call = 0; call < 2; ++call) {
+        api.replyWith(200, "text/csv", std::string(2500, ' ') + "<!DOCTYPE html><html><body>Blocked</body></html>");
+        int rejected = 0;
+        int delivered = 0;
+        auto onError = [&](ZBErrorResponse error) {
+            ++rejected;
+            EXPECT_EQ(error.statusCode, 200);
+            EXPECT_NE(error.toString().find("HTML"), std::string::npos) << error.toString();
+        };
+        auto onCsv = [&](std::string) { ++delivered; };
+        if (call == 0) {
+            client.downloadSeeds(onCsv, onError);
+        } else {
+            client.downloadStatistics("a@b.com", onCsv, onError);
+        }
+        EXPECT_EQ(rejected, 1) << call;
+        EXPECT_EQ(delivered, 0) << call;
+        api.take();
+    }
+}
+
 // -- the Warmup key and the SMTP credentials in every error --------------------
 
 namespace {

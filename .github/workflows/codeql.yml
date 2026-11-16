@@ -23,7 +23,6 @@ on:
     - cron: '26 15 * * 5'
 
 permissions:
-  security-events: write
   contents: read
 
 jobs:

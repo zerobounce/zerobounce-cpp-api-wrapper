@@ -22,7 +22,7 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
-          re='^v[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$'
+          re='^v[0-9]+\.[0-9]+\.[0-9]+$'
           if [[ ! "$TAG" =~ $re ]]; then
             echo "Error: the tag input must be a release tag such as v1.2.3."
             exit 1
@@ -72,10 +72,10 @@ jobs:
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout validated commit
+      - name: Checkout tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag_sha }}
+          ref: refs/tags/${{ github.event.inputs.tag }}
           persist-credentials: false
 
       - name: Check HEAD is the validated commit

@@ -1,13 +1,31 @@
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
 
+### Breaking
+
+- `SendFileOptions`, `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs must be rebuilt. The shared library's `SOVERSION` is the major version (`3` while the project version is 3.0.1), so that rebuild links a different soname.
+- **Behaviour change:** `getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError` when a present field has the wrong JSON type. It used to return the default. `null` and a missing field still return the default.
+
+### Added
+
+- `WarmupManagedSending::timezoneOffsetHours` (`std::optional<double>`), added at the end of the struct: hours from UTC with fractional zones such as 5.5 (India) or 5.75 (Nepal), sent as `timezone_offset` in place of the deprecated `timezoneOffset` when both are set. A whole number is sent as an integer (`"timezone_offset":3`); a value outside -11.0 to 14.0, NaN or an infinity is rejected before anything is sent. Source written for 3.0.x keeps compiling.
+- `RequestHandler::timeoutMs()` and `RequestHandler::connectTimeoutMs()` report the timeouts a handler applies (120000 and 30000 by default).
+
+### Changed
+
+- A project that pulls this SDK in with CMake `FetchContent` or `add_subdirectory` links the library only. googletest and the `ZeroBounceTests` target are built only when this repository is the top-level project.
+
+### Deprecated
+
+- `WarmupManagedSending::timezoneOffset` (`std::optional<int>`, whole hours only): use `timezoneOffsetHours`. It keeps its type and behaviour and is ignored when `timezoneOffsetHours` is set.
+- `WarmupEmailContent::industry`, `WarmupEmailContent::website` (use `companyWebsite`) and `WarmupManagedSending::dailyLimit`: the API does not read them. They are documented as deprecated rather than marked `[[deprecated]]`, since clang would then warn in every implicit copy or move of the struct, also for callers that never use them.
+
+### Removed
+
+- `SendFileOptions::removeDuplicateSet` is removed. It was never in a released version. `removeDuplicate` is what `sendFile` and `scoringSendFile` send, and a 3.0.1 aggregate initialiser still compiles.
+
 ### Fixed
+
+- A file download whose JSON body has no message string, or whose body is not JSON on a JSON or `+json` content type, reported the raw body. It now says `ZeroBounce returned a JSON error instead of a file.` or `ZeroBounce returned a response that is not valid JSON.` `getFileJsonIndicatesError` returns true for a JSON list and for `{}`, and false for `{"success":true}` with no error or message key.
 
 - File downloads (`getFile`, `scoringGetFile`, `emailFinderGetFile`, `domainSearchGetFile` and their options forms, and `downloadSeeds` and `downloadStatistics`) treated an HTML page as the file when spaces, a byte-order mark or no-break spaces pushed `<html` past the first 2000 bytes, and they saved a JSON error the same way when a byte-order mark or a no-break space sat in front of `{` or `[`, or when the body was a JSON array or a content type ending in `+json`. Those bodies are errors with the HTTP status, the existing file is left in place, and the error text is the API's message. A body of only that padding is an error. A file that really begins with spaces is still saved unchanged, spaces included.
 - An HTTP 200 that is only a message (`message`, `Message`, `error`, `error_message`, `Error` or `detail`), or `{}`, or a message beside fields that are all null, reached the success callback on `sendFile`, `fileStatus`, `deleteFile`, `getActivityData`, `scoreEmail`, `getApiUsage`, `validateBatch` and the other typed calls. It is now an error with status 200. A file-status object with no non-null status field (`{"foo":1}`) is an error; `{"file_status":"Processing"}` stays the raw status. Validate's greylist answer `{"Message": "..."}` stays a result, as do `{"domain":null}` with no message, the filter calls, the Inbox Placement calls and the list-evaluator result.
@@ -33,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A secret echoed as `\u{00000027}` or `\U{00000027}` (up to eight hex digits inside braces, when the value is a real code point) was readable. It is now masked, as `\u{27}` already was, for the API key, the Warmup key and the SMTP username and password.
+- `https://[]/v2` was accepted as a host. Empty brackets are refused, as `https://:443/v2` already was. `https://[::1]/v2` is still a host.
+- An API key containing a byte that is not valid UTF-8 was sent. It is now refused with `api_key has surrounding whitespace or control characters`.
+
 - An error body that echoed a secret containing `'` as `\u{27}`, `\U{27}`, `\U0027`, `\U00000027` or octal `\047` (and the same spellings percent-encoded) reached the callback with the character readable. Those spellings are now masked for the API key, the Warmup key and the SMTP username and password. `%u0027` is not treated as an encoding of that character.
 - A base URL with a username or password (`https://user:pass@host`, `https://@host`) was accepted, so the key was sent to the host after `@`. It is now refused before anything is sent, with `url must not contain a username or password` (`base_url must not contain a username or password` for Warmup). The URL is not included in the message. An `https://` URL with no host is refused as well.
 - An API key containing a Unicode space or an invisible character (no-break space, zero-width space, byte-order mark, bidirectional override, soft hyphen and the like) was sent. It is now refused with the existing message `api_key has surrounding whitespace or control characters`. A space in the middle of a key is still sent.
@@ -40,22 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An error built from a response body could carry the API key: the main `ZeroBounce` client masked the key only in transport errors, so `{"error": "Invalid API key <key>"}` or `{"success": false, "message": "... <key>"}` on an HTTP 200, a JSON or text 4xx quoting the key, or a body quoting the request URL with `api_key=<key>` (URL-encoded) reached the error callback whole, on every call. Every error the client delivers now has the key, raw, URL-encoded and JSON-escaped (`"` and `\` escaped, `/` escaped or not, as a request body echoed back), replaced by `***`.
 - A Warmup call answered with an HTTP 200 body that is not JSON (a proxy's text, `Invalid API-Key <key>`) reported the body with the Warmup key in it, on every JSON call; for `testSmtpConfiguration` the SMTP username and password too. That error masked only the call's extra secrets, not the key. Every Warmup error now goes through one function that masks the key, raw and URL-encoded, together with the call's own secrets.
 - Key and SMTP-credential redaction covered only the spellings it generated (raw, URL-encoded, JSON-escaped and a few compositions), so a body quoting a secret through another composition, such as URL-encoded after JSON escaping and URL-encoding again, reached the error callback decodable. After masking, every error message is now decoded up to four more times (the SDK's own request encoding plus three layers an echo may add: URL-decoding with upper- or lower-case hex, `+` as a space, JSON-unescaping including `\/`, `\uXXXX` and surrogate pairs, in any order; a `%00` or `\u0000` does not end the search); if any view still holds the API key, the Warmup key or the SMTP username or password, the body-derived text is dropped for `The response body was omitted because it contained a credential.`
-
-### Changed
-
-- `SendFileOptions`, `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs, or subclasses `RequestHandler`, must be rebuilt.
-- A project that pulls this SDK in with CMake `FetchContent` or `add_subdirectory` links the library only. googletest and the `ZeroBounceTests` target are built only when this repository is the top-level project.
-
-### Deprecated
-
-- `WarmupManagedSending::timezoneOffset` (`std::optional<int>`, whole hours only): use `timezoneOffsetHours`. It keeps its type and behaviour and is ignored when `timezoneOffsetHours` is set.
-- `WarmupEmailContent::industry`, `WarmupEmailContent::website` (use `companyWebsite`) and `WarmupManagedSending::dailyLimit`: the API does not read them. They are documented as deprecated rather than marked `[[deprecated]]`, since clang would then warn in every implicit copy or move of the struct, also for callers that never use them.
-
-### Added
-
-- `WarmupManagedSending::timezoneOffsetHours` (`std::optional<double>`), added at the end of the struct: hours from UTC with fractional zones such as 5.5 (India) or 5.75 (Nepal), sent as `timezone_offset` in place of the deprecated `timezoneOffset` when both are set. A whole number is sent as an integer (`"timezone_offset":3`); a value outside -11.0 to 14.0, NaN or an infinity is rejected before anything is sent. Source written for 3.0.x keeps compiling.
-- `RequestHandler::timeoutMs()` and `RequestHandler::connectTimeoutMs()` report the timeouts a handler applies (120000 and 30000 by default).
-- `SendFileOptions::removeDuplicateSet`, added at the end of the struct, is ignored. `removeDuplicate` is what `sendFile` and `scoringSendFile` send.
 
 ## [3.0.1] - 2026-11-12
 

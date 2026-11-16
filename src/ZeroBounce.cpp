@@ -52,15 +52,24 @@ void ZeroBounce::initialize(
 
 bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
     // The same padding skip as the download sniff: a byte order mark or NBSP
-    // in front of the object does not hide it.
+    // in front of the object or list does not hide it.
     const std::size_t i = zbSkipDownloadPadding(body);
-    if (i >= body.size() || body[i] != '{') {
+    if (i >= body.size() || (body[i] != '{' && body[i] != '[')) {
         return false;
     }
     try {
         json o = json::parse(body.substr(i));
+        // A result file never is a JSON list, so a list is the API saying why
+        // there is no file.
+        if (o.is_array()) {
+            return true;
+        }
         if (!o.is_object()) {
             return false;
+        }
+        // {} is an error too: a file is never an empty object.
+        if (o.empty()) {
+            return true;
         }
         if (o.contains("success")) {
             const auto& s = o["success"];
@@ -86,55 +95,19 @@ bool ZeroBounce::getFileJsonIndicatesError(const std::string& body) {
                 return true;
             }
         }
-        return o.contains("success");
+        // {"success": true} with no error or message key is not an error.
+        return false;
     } catch (...) {
         return false;
     }
 }
 
 std::string ZeroBounce::formatGetFileErrorMessage(const std::string& body) {
-    try {
-        const std::string content = body.substr(zbSkipDownloadPadding(body));
-        json o = json::parse(content);
-        if (!o.is_object()) {
-            // A list of messages (["File not ready"]) is read as the API's words.
-            const std::string joined = zbDownloadJsonMessage(content, 0);
-            return content.empty() ? "Invalid getfile response" : joined;
-        }
-        for (const char* k : {"message", "error", "error_message", "Message", "Error"}) {
-            if (!o.contains(k)) {
-                continue;
-            }
-            const auto& v = o[k];
-            if (v.is_string()) {
-                std::string t = v.get<std::string>();
-                if (!t.empty()) {
-                    return t;
-                }
-            }
-            if (v.is_array()) {
-                // Every non-empty line of a list, joined with "\n" as the
-                // file-job message is.
-                std::string joined;
-                bool any = false;
-                for (const auto& item : v) {
-                    if (item.is_string() && !item.get<std::string>().empty()) {
-                        if (any) {
-                            joined += "\n";
-                        }
-                        joined += item.get<std::string>();
-                        any = true;
-                    }
-                }
-                if (any) {
-                    return joined;
-                }
-            }
-        }
-        return body;
-    } catch (...) {
-        return body.empty() ? "Invalid getfile response" : body;
+    // The API's message, or a fixed sentence: never the raw body.
+    if (zbSkipDownloadPadding(body) == body.size()) {
+        return "Invalid getfile response";
     }
+    return zbDownloadJsonMessage(body, 0);
 }
 
 bool ZeroBounce::invalidApiKey(OnErrorCallback errorCallback) {
@@ -647,7 +620,7 @@ void ZeroBounce::sendFileInternal(
         }
 
         if (!options.returnUrl.empty()) {
-                multipart.parts.emplace_back(cpr::Part{"return_url", options.returnUrl});
+            multipart.parts.emplace_back(cpr::Part{"return_url", options.returnUrl});
         }
 
         multipart.parts.emplace_back(cpr::Part{"has_header_row", std::string(options.hasHeaderRow ? "true" : "false")});
@@ -718,8 +691,6 @@ void ZeroBounce::getFileInternal(
         }
 
         cpr::Response reqResponse = requestHandler->getWithParameters(cpr::Url{base}, params);
-
-        std::string contentType = reqResponse.header["Content-Type"];
 
         std::string rsp = reqResponse.text;
 

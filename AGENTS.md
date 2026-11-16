@@ -11,7 +11,7 @@ Guidance for AI coding agents working in this repository.
 - `include/ZeroBounce/`: public headers. `ZeroBounce.h` is the client.
 - `src/ZeroBounce.cpp`: validation, bulk file, credits, activity, scoring.
 - `src/Priority3.cpp`: bulk email finder, domain search, list evaluator, filters, the S3 / SFTP bulk jobs, and the Inbox Placement Tester. All eight S3 / SFTP file jobs (`validateS3File`, `scoreS3File`, `emailFinderS3File`, `domainSearchS3File`, and the four SFTP/FTP ones) build their shared form fields through `bulkFileJobFields`; `validateS3File` and `scoreS3File` then append the extra fields only they take. Do not re-implement those shared fields per job: that duplication is how `return_url` came to be optional on two of them. `exportSFTPFile` sends `export_path`, not the `export_bucket` `exportS3File` sends, and both are optional.
-- `src/HttpError.cpp`: turns HTTP failures, HTML pages, and empty or non-JSON bodies into a short `ZBErrorResponse`.
+- `src/HttpError.cpp`: turns HTTP failures, HTML pages, and empty or non-JSON bodies into a short `ZBErrorResponse`. It also redacts secrets, checks the API key and the request URL, and writes a finished download over the target.
 - `test/ZeroBounceTest.cpp`: existing GoogleTest cases with a scripted response.
 - `test/OfflineApiTest.cpp`: offline suite. A fake `BaseRequestHandler` records every request and answers without the network.
 - `test/OfflineWarmupTest.cpp`: the same for `ZeroBounceWarmup`.
@@ -60,10 +60,9 @@ log, a fixture or a message.
 - **`allow_phase_2` is validation `sendFile` only**, and only when `allowPhase2IsSet` is true. Scoring `sendFile` ignores it. `activity_data` on get-file is validation only.
 - **`validateBatch` uses `api.zerobounce.net`**, not `bulkapi.zerobounce.net`.
 - **Failures use the error callback**, not exceptions. The message must be short: no raw HTML, no megabyte body, no `[json.exception…]` text, and no `Error: Error:` prefix. An account-level `validateBatch` error (`email_address` `all`) is an error callback. A per-address error stays on the success result. The caller's callbacks run outside the SDK's `try`/`catch` (record the outcome in a `ZBOutcome` from `src/HttpError.h`, then `deliver` it), so an exception thrown by a callback reaches the caller and is never reported as an API error. A `ZBOutcome` is built with the request's API key, and `deliver` masks it with `zbRedactApiKey` in every error: the raw key, its URL-encoded and JSON-escaped forms, and any view that still shows the key after URL-decoding and JSON-unescaping (`\uXXXX`, `\u{…}`, `\U` and octal). A body quoting the key never reaches the caller.
-- **Every request path checks its URL with `zbCheckRequestUrl` (HTTPS only) before sending.** `RequestHandler` sets the total and connect timeouts and `cpr::Redirect{false}` on every method; `test/TransportTest.cpp` exercises each method against a local socket server, so a new method needs a row there.
+- **Every request path checks its URL with `zbCheckRequestUrl` before sending.** The URL must be `https://`, must have a host, and must not contain a username or password. `RequestHandler` sets the total and connect timeouts and `cpr::Redirect{false}` on every method; `test/TransportTest.cpp` exercises each method against a local socket server, so a new method needs a row there.
 - **Tests replace `requestHandler`.** It is `protected`. Subclass `ZeroBounce` in the test and assign a fake. Do not call the live API from the default test run; `live/live_api.cpp` is the separate, opt-in suite.
 - **Errors carry the HTTP status.** `ZBErrorResponse::statusCode` is set on every failed response, an HTTP 200 whose body reports an error included (the `validateBatch` account-level error, a `getFile` JSON error body), so callers can tell a Cloudflare 403 from an API 400/404 and a Warmup 429. It stays 0 only when the SDK raised the error itself: an argument rejected before sending, or no complete HTTP response (none at all, or a body cut short). A JSON body whose fields do not have the types the result type reads carries the HTTP status.
-
 - Match the surrounding style. Do not reformat unrelated code.
 
 ## Changelog

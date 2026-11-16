@@ -10,7 +10,7 @@ More information about ZeroBounce you can find in the [official documentation](h
 - Request URLs include `api_key` as a query parameter (ZeroBounce API contract). Do not log full request URLs or enable payload debug logging in production.
 
 ## REQUIREMENTS
-- CMake 3.20 or newer.
+- CMake 3.20 or newer. CI builds with 3.20.2, the oldest 3.20 release on PyPI.
 - A C++20 compiler to build the library: its `CMakeLists.txt` compiles the `ZeroBounce` target (and its fetched dependencies) as C++20.
 - C++17 or newer for your own code that includes the headers. They use `std::optional` and include libcpr's headers, which need C++17. The `ZeroBounce` target requires C++17 of every target that links it (`target_compile_features(ZeroBounce PUBLIC cxx_std_17)`), so CMake compiles a target set to C++14 or older as C++17.
 - On Linux and macOS, OpenSSL with its development files (for example `libssl-dev` on Linux, or Homebrew's `openssl@3` on macOS; pass `-DOPENSSL_ROOT_DIR=...` if CMake does not find it): libcpr builds its bundled libcurl with HTTPS through OpenSSL. curl no longer supports Secure Transport, the macOS system TLS library; to use the system libcurl instead, configure with `-DCPR_USE_SYSTEM_CURL=ON`. On Windows the bundled libcurl uses the system TLS library (Schannel).
@@ -543,8 +543,9 @@ warmup.initialize("<YOUR_WARMUP_API_KEY>");
 auto onSuccess = [](std::string json) { std::cout << json << std::endl; };
 auto onError = [](ZBErrorResponse error) { std::cout << error.statusCode << " " << error.toString() << std::endl; };
 
-// initialize rejects a padded key or a base URL that is not https, and says so
-// rather than leaving the client quietly unusable.
+// initialize rejects a padded key, a key with a Unicode space or a byte that is
+// not UTF-8, a base URL that is not https, an empty host, or a username or
+// password in the URL, and says so rather than leaving the client quietly unusable.
 if (!warmup.isReady()) {
     std::cout << warmup.getInitializeError() << std::endl;
 }
@@ -607,9 +608,10 @@ Run it by hand before every release: the offline suite proves the SDK sends what
 The list evaluator and the Inbox Placement Tester have their own base URLs,
 separate from the main and bulk hosts. The three bulk hosts have setters of
 their own, so every bulk endpoint can be pointed at a test host. The setters
-strip trailing slashes, and every base URL must be `https://`: a call to any
-other URL reports `url must be an https:// URL` to its error callback and sends
-nothing.
+strip trailing slashes. Every base URL must be `https://` and must have a
+host. A call to any other URL reports `url must be an https:// URL` and sends
+nothing. A URL with a username or password reports `url must not contain a
+username or password` and sends nothing.
 
 ```cpp
 ZeroBounce* zb = ZeroBounce::getInstance();

@@ -107,8 +107,10 @@ class ZeroBounceWarmup {
         /**
          * Store the Warmup API key, and optionally a custom https base URL.
          * A key with surrounding whitespace or control characters, or a base
-         * URL that is not https, is rejected here: every later call then fails
-         * with that message rather than sending the key anywhere.
+         * URL that is not https, has an empty host, or has a username or
+         * password (https://user:pass@host), is rejected here: every later
+         * call then fails with that message rather than sending the key
+         * anywhere.
          *
          * The rejection is not silent. `getInitializeError()` returns the
          * reason straight away, so a bad base URL can be caught at the point

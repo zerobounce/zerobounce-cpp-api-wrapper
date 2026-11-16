@@ -61,8 +61,8 @@ extern const char* const kZbDirtyApiKeyMessage;
 std::string zbNormalizeBaseUrl(std::string url);
 
 /**
- * HTTPS only: reports "url must be an https:// URL" and returns false for any
- * other URL (or one with no host), and "url must not contain a username or
+ * Reports "url must be an https:// URL" and returns false for a URL that is not
+ * https:// or that has no host, and "url must not contain a username or
  * password" for one with userinfo, before anything is sent. Every request path
  * calls this.
  */
@@ -166,7 +166,12 @@ bool zbReportFailedDownload(
  */
 bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentType);
 
-/** The API's message in a JSON download body: its message field, or the strings of a list. */
+/**
+ * The API's message in a JSON download body: its message field, or the strings
+ * of a list. Never the raw body: JSON with no message string gives "ZeroBounce
+ * returned a JSON error instead of a file.", and invalid JSON or a body that is
+ * not JSON gives "ZeroBounce returned a response that is not valid JSON.".
+ */
 std::string zbDownloadJsonMessage(const std::string& body, long statusCode);
 
 /**
@@ -211,7 +216,7 @@ extern const char* const kZbSecretOmittedMessage;
 
 /**
  * A copy of text with every form of secret (zbSecretForms) replaced by ***.
- * When a view of the result decoded up to three times (URL-decoding, '+' as a
+ * When a view of the result decoded up to four times (URL-decoding, '+' as a
  * space, JSON-unescaping, in any order) still holds the secret, the whole
  * text is replaced by kZbSecretOmittedMessage.
  */

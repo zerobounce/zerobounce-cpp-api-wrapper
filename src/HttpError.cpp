@@ -676,7 +676,9 @@ long zbHexRun(const std::string& text, size_t at, size_t minDigits, size_t maxDi
         if (digit < 0) {
             break;
         }
-        value = value * 16 + digit;
+        // Past the last code point the exact value no longer matters; keeping
+        // it capped stops a long run overflowing a 32-bit long.
+        value = value > 0x10FFFF ? value : value * 16 + digit;
         ++count;
     }
     used = count;
@@ -727,7 +729,7 @@ std::string zbJsonUnescapeView(const std::string& text, bool wideU = true) {
         size_t consumed = 0;  // characters after the backslash
         if (i + 2 < text.size() && text[i + 2] == '{') {
             size_t used = 0;
-            const long value = zbHexRun(text, i + 3, 1, 6, used);
+            const long value = zbHexRun(text, i + 3, 1, 8, used);
             if (value >= 0 && value <= 0x10FFFF && i + 3 + used < text.size() && text[i + 3 + used] == '}') {
                 cp = value;
                 consumed = 3 + used;
@@ -850,6 +852,12 @@ long zbNextCodePoint(const std::string& text, size_t& at) {
         }
         cp = (cp << 6) | (next & 0x3F);
     }
+    // Overlong forms, surrogates and values past U+10FFFF are not UTF-8.
+    if ((length == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+        (length == 4 && (cp < 0x10000 || cp > 0x10FFFF))) {
+        ++at;
+        return -1;
+    }
     at += length;
     return static_cast<long>(cp);
 }
@@ -889,8 +897,9 @@ bool zbApiKeyIsClean(const std::string& apiKey) {
             ++at;
             continue;
         }
+        // A byte that is not valid UTF-8 is not a key a server can have issued.
         const long cp = zbNextCodePoint(apiKey, at);
-        if (cp >= 0 && zbIsInvisibleOrSpace(cp)) {
+        if (cp < 0 || zbIsInvisibleOrSpace(cp)) {
             return false;
         }
     }
@@ -921,8 +930,9 @@ bool zbUrlHasEmptyHost(const std::string& url) {
     }
     const auto end = url.find_first_of("/?#", scheme + 3);
     const std::string authority = url.substr(scheme + 3, end == std::string::npos ? end : end - scheme - 3);
-    // A host is what is in front of the port; an IPv6 host is in brackets.
-    return authority.empty() || authority.front() == ':';
+    // A host is what is in front of the port; an IPv6 host is in brackets, and
+    // empty brackets are no host.
+    return authority.empty() || authority.front() == ':' || authority.compare(0, 2, "[]") == 0;
 }
 
 bool zbCheckRequestUrl(
@@ -1081,28 +1091,68 @@ bool zbDownloadBodyIsJson(const std::string& body, const std::string& contentTyp
 }
 
 std::string zbDownloadJsonMessage(const std::string& body, long statusCode) {
+    // Never the raw body: a JSON answer without a message string, or a body
+    // that is not JSON on a JSON content type, gets a fixed sentence.
+    static const char* const notJson = "ZeroBounce returned a response that is not valid JSON.";
+    static const char* const noMessage = "ZeroBounce returned a JSON error instead of a file.";
     const size_t first = zbSkipDownloadPadding(body);
-    if (first < body.size() && body[first] == '[') {
-        try {
-            json parsed = json::parse(trimCopy(body.substr(first)));
+    const std::string trimmed = trimCopy(body.substr(first));
+    if (trimmed.empty() || (trimmed.front() != '{' && trimmed.front() != '[')) {
+        return notJson;
+    }
+    json parsed;
+    try {
+        parsed = json::parse(trimmed);
+    } catch (const std::exception&) {
+        return notJson;
+    }
+    if (parsed.is_array()) {
+        std::string joined;
+        for (const auto& item : parsed) {
+            if (item.is_string() && !trimCopy(item.get<std::string>()).empty()) {
+                if (!joined.empty()) {
+                    joined += "\n";
+                }
+                joined += trimCopy(item.get<std::string>());
+            }
+        }
+        return joined.empty() ? noMessage : joined;
+    }
+    if (parsed.is_object()) {
+        if (parsed.contains("title") && parsed["title"].is_string()) {
+            // A gateway's block page is named by its title, as for any error.
+            const std::string message = zbMessageFromBody(body, statusCode);
+            if (message == parsed["title"].get<std::string>()) {
+                return message;
+            }
+        }
+        // A message may also be a list of lines, joined with "\n".
+        for (const char* key : {"message", "error", "error_message", "Message", "Error"}) {
+            if (!parsed.contains(key)) {
+                continue;
+            }
+            const auto& value = parsed[key];
+            if (value.is_string() && !trimCopy(value.get<std::string>()).empty()) {
+                return stripErrorPrefix(trimCopy(value.get<std::string>()));
+            }
             std::string joined;
-            if (parsed.is_array()) {
-                for (const auto& item : parsed) {
-                    if (item.is_string() && !trimCopy(item.get<std::string>()).empty()) {
-                        if (!joined.empty()) {
-                            joined += "\n";
-                        }
-                        joined += trimCopy(item.get<std::string>());
+            if (value.is_array()) {
+                for (const auto& item : value) {
+                    if (item.is_string() && !item.get<std::string>().empty()) {
+                        joined += (joined.empty() ? "" : "\n") + item.get<std::string>();
                     }
                 }
             }
             if (!joined.empty()) {
                 return joined;
             }
-        } catch (const std::exception&) {
+        }
+        const std::string fromField = jsonErrorText(parsed);
+        if (!fromField.empty()) {
+            return stripErrorPrefix(fromField);
         }
     }
-    return zbMessageFromBody(body, statusCode);
+    return noMessage;
 }
 
 bool zbReportBadDownloadBody(

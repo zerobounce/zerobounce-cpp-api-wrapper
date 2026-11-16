@@ -309,9 +309,14 @@ bool warmupCsv(
     // object or array, or an HTML page. Padding (a byte order mark, NBSP, any
     // run of whitespace) in front of the text does not hide it.
     const std::string body = trimmed(result.body.substr(zbSkipDownloadPadding(result.body)));
-    if (body.empty() || zbDownloadBodyIsJson(result.body, result.contentType) ||
-        zbContentTypeIsHtml(result.contentType) || zbBodyLooksLikeHtml(result.body)) {
+    if (body.empty() || zbContentTypeIsHtml(result.contentType) || zbBodyLooksLikeHtml(result.body)) {
         reportWarmupError(zb, errorCallback, zbMessageFromBody(result.body, result.statusCode), {},
+            result.statusCode);
+        return false;
+    }
+    if (zbDownloadBodyIsJson(result.body, result.contentType)) {
+        // The API's message or a fixed sentence, never the raw body.
+        reportWarmupError(zb, errorCallback, zbDownloadJsonMessage(result.body, result.statusCode), {},
             result.statusCode);
         return false;
     }
