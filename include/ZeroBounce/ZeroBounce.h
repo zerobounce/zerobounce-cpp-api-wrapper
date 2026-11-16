@@ -119,6 +119,23 @@ struct ListInboxPlacementTestsOptions {
     std::optional<int> pageSize;
 };
 
+namespace zbdetail {
+/**
+ * Runs one request on a cpr::Session with the options given, like cpr::Get
+ * and the others do, and sets CURLOPT_NOSIGNAL on the handle itself: libcurl
+ * must not use signals (alarm/SIGALRM from a thread is unsafe in a
+ * multi-threaded program), and a cpr built without CPR_CURL_NOSIGNAL (a system
+ * copy, say) would leave it off.
+ */
+template <typename Method, typename... Ts>
+cpr::Response performNoSignal(Method method, Ts&&... ts) {
+    cpr::Session session;
+    cpr::priv::set_option(session, std::forward<Ts>(ts)...);
+    curl_easy_setopt(session.GetCurlHolder()->handle, CURLOPT_NOSIGNAL, 1L);
+    return method(session);
+}
+}  // namespace zbdetail
+
 /**
  * Base class for handling requests.
  */
@@ -161,16 +178,16 @@ class BaseRequestHandler {
         // API. They have defaults rather than being pure so existing
         // subclasses keep compiling.
         virtual cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Put(url, header, body, cpr::Timeout{DefaultTimeoutMs},
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Put(); }, url, header, body, cpr::Timeout{DefaultTimeoutMs},
                 cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
         virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Delete(url, header, cpr::Timeout{DefaultTimeoutMs},
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Delete(); }, url, header, cpr::Timeout{DefaultTimeoutMs},
                 cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
         // The Warmup API's DELETE /custom-engagement takes a JSON body.
         virtual cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Delete(url, header, body, cpr::Timeout{DefaultTimeoutMs},
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Delete(); }, url, header, body, cpr::Timeout{DefaultTimeoutMs},
                 cpr::ConnectTimeout{DefaultConnectTimeoutMs}, cpr::Redirect{false});
         }
 
@@ -215,28 +232,28 @@ class RequestHandler : public BaseRequestHandler {
 
     protected:
         cpr::Response doGet(const cpr::Url& url) {
-            return cpr::Get(url, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Get(); }, url, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doGet(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Get(url, header, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Get(); }, url, header, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doGetWithParameters(const cpr::Url& url, const cpr::Parameters& parameters) {
-            return cpr::Get(url, parameters, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Get(); }, url, parameters, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Post(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Post(); }, url, header, body, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doPost(const cpr::Url& url, const cpr::Header& header, const cpr::Multipart& multipart) {
-            return cpr::Post(url, header, multipart, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Post(); }, url, header, multipart, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doPut(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Put(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Put(); }, url, header, body, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header) {
-            return cpr::Delete(url, header, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Delete(); }, url, header, timeout, connectTimeout, cpr::Redirect{false});
         }
         cpr::Response doDelete(const cpr::Url& url, const cpr::Header& header, const cpr::Body& body) {
-            return cpr::Delete(url, header, body, timeout, connectTimeout, cpr::Redirect{false});
+            return zbdetail::performNoSignal([](cpr::Session& s) { return s.Delete(); }, url, header, body, timeout, connectTimeout, cpr::Redirect{false});
         }
 
     private:

@@ -106,13 +106,16 @@ jobs:
         output: sarif-results
         upload: never
 
-    # Exclude alerts in fetched dependencies (e.g. curl parsedate.c) from code scanning results
+    # Exclude alerts in fetched dependencies (curl, cpr, googletest, nlohmann_json) from code scanning results
     - name: Filter dependency alerts from SARIF
       if: matrix.language == 'c-cpp'
       uses: advanced-security/filter-sarif@2da736ff05ef065cb2894ac6892e47b5eac2c3c0 # v1.1
       with:
         patterns: |
           -**/curl-src/**
+          -**/cpr-src/**
+          -**/googletest-src/**
+          -**/nlohmann_json-src/**
         input: sarif-results/cpp.sarif
         output: sarif-results/cpp.sarif
 

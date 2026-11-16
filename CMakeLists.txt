@@ -128,7 +128,7 @@ endif()
 # googletest and the unit tests are only for building this repository. A project
 # that pulls the SDK in gets the library, not googletest or the ZeroBounceTests
 # target. GIT_TAG is the commit tag v1.18.0 points to
-# (git ls-remote https://github.com/google/googletest.git refs/tags/v1.13.0).
+# (git ls-remote https://github.com/google/googletest.git refs/tags/v1.18.0).
 if(ZEROBOUNCE_IS_TOP_LEVEL)
     set(INSTALL_GTEST OFF CACHE BOOL "Install googletest with the SDK")
     FetchContent_Declare(
@@ -145,8 +145,10 @@ if(ZEROBOUNCE_IS_TOP_LEVEL)
         ZB_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/include/ZeroBounce/ZeroBounce.h"
         ZB_STRICT_JSON_CORPUS="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/strict-json-corpus.tsv"
         ZB_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src")
-    if(CPR_CURL_NOSIGNAL)
-        target_compile_definitions(ZeroBounceTests PRIVATE ZB_EXPECT_CURL_NOSIGNAL=1)
+    # What cpr itself was compiled with: add_definitions in its directory.
+    get_directory_property(ZB_CPR_DEFINITIONS DIRECTORY ${cpr_SOURCE_DIR} COMPILE_DEFINITIONS)
+    if("CPR_CURL_NOSIGNAL" IN_LIST ZB_CPR_DEFINITIONS)
+        target_compile_definitions(ZeroBounceTests PRIVATE ZB_CPR_BUILT_WITH_NOSIGNAL=1)
     endif()
     target_link_libraries(ZeroBounceTests PRIVATE ${PROJECT_NAME} gtest gtest_main)
     if(ZB_SANITIZE AND NOT MSVC)

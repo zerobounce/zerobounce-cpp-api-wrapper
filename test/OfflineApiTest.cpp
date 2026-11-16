@@ -4864,6 +4864,19 @@ TEST(OfflineApi, AKeyWithAnInvisibleFillerOrSelectorIsRefused) {
 }
 
 #ifndef _WIN32
+TEST(OfflineApi, SecureWipeOverwritesBytesPastTheSizeToo) {
+    // A string that was longer once keeps its old bytes past size(): the
+    // wipe covers the whole capacity.
+    std::string secret(100, 'k');
+    const char* data = secret.data();
+    secret.resize(10);
+    zbSecureWipe(secret);
+    EXPECT_TRUE(secret.empty());
+    for (size_t i = 0; i < 100; ++i) {
+        EXPECT_EQ(data[i], '\0') << i;
+    }
+}
+
 TEST(OfflineApi, SecureWipeOverwritesTheBufferAndClearsTheString) {
     std::string secret(64, 'k');
     const char* data = secret.data();
@@ -5046,4 +5059,33 @@ TEST(OfflineApi, ADownloadBodyWithAFalseOrNonFlagSuccessIsAnError) {
     for (const char* body : {R"({"success":true})", R"({"success":1})", R"({"success":"TRUE "})"}) {
         EXPECT_FALSE(ZeroBounce::getFileJsonIndicatesError(body)) << body;
     }
+}
+
+// ---- an error body with no message text has a message, not an empty list ---
+
+TEST(OfflineApi, AnErrorBodyWithNoMessageKeyGetsTheFixedTextOnTypedCalls) {
+    const std::string fixed = "ZeroBounce returned an error with no message text.";
+    ScriptedApi api;
+    api.contentType = "application/json";
+    api.status = 200;
+    for (const char* body : {"{}", "{ }", R"({"success":"maybe"})", R"({"success":"0 ","file_id":"x"})",
+                             R"({"success":false,"file_id":"x","file_name":"y"})", R"({"message":""})"}) {
+        api.body = body;
+        ScriptedClient client(api);
+        std::vector<ZBErrorResponse> errors;
+        auto bad = [&](ZBErrorResponse e) { errors.push_back(e); };
+        client.getCredits([](ZBCreditsResponse) {}, bad);
+        client.fileStatus("fid", [](ZBFileStatusResponse) {}, bad);
+        client.deleteFile("fid", [](ZBDeleteFileResponse) {}, bad);
+        client.scoreEmail("a@example.com", [](ZBScoreEmailResponse) {}, bad);
+        for (const auto& e : errors) {
+            ASSERT_EQ(e.errors.size(), 1u) << body;
+            EXPECT_EQ(e.errors[0], fixed) << body;
+        }
+        EXPECT_FALSE(errors.empty()) << body;
+    }
+    // A message or error key still wins, and other fields add nothing.
+    EXPECT_EQ(ZBErrorResponse::parseError(R"({"success":false,"error":"Invalid API key","file_id":"x"})").errors,
+              std::vector<std::string>{"Invalid API key"});
+    EXPECT_EQ(ZBErrorResponse::parseError("{}").errors, std::vector<std::string>{fixed});
 }

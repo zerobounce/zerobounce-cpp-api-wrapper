@@ -35,7 +35,7 @@ Open an [issue](https://github.com/zerobounce/zerobounce-cpp-api-wrapper/issues)
 
 2. **Make your changes** and add or update tests where relevant.
 
-3. **Run the test suite** (see README) before submitting. The offline suite needs no key and no network: build, then run `ctest --test-dir build --output-on-failure` (or `./build/bin/ZeroBounceTests` from the repository root). The live suite (`live/`) calls the real API: it is opt-in (`-DZEROBOUNCE_BUILD_LIVE_TESTS=ON`), reads `ZEROBOUNCE_API_KEY` (and `ZEROBOUNCE_WARMUP_API_KEY`) from the environment, and a key is never committed, written to a file or put in an issue or pull request. Pull requests are checked by the offline suite only.
+3. **Run the test suite** (see README) before submitting. The offline suite needs no key and no network: build, then run `ctest --test-dir build --output-on-failure` (or `./build/bin/ZeroBounceTests` from the repository root). Also run it under ASan and UBSan: configure a second build directory with `-DZB_SANITIZE=ON` and run the same tests there. The live suite (`live/`) calls the real API: it is opt-in (`-DZEROBOUNCE_BUILD_LIVE_TESTS=ON`), reads `ZEROBOUNCE_API_KEY` (and `ZEROBOUNCE_WARMUP_API_KEY`) from the environment, and a key is never committed, written to a file or put in an issue or pull request. Pull requests are checked by the offline suite only.
 
 4. **Commit** with a clear message (e.g. `Add X`, `Fix Y`).
 

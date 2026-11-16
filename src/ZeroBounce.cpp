@@ -31,21 +31,44 @@ namespace {
 // overwritten when it goes out of scope.
 class ZbSecretUrl {
 public:
-    ZbSecretUrl() = default;
+    // Room for the longest URL the SDK builds from a key, an email and the
+    // options, so that += never moves the text to a new buffer (the old one
+    // would keep the key).
+    ZbSecretUrl() { text_.reserve(4096); }
     ZbSecretUrl(const ZbSecretUrl&) = delete;
     ZbSecretUrl& operator=(const ZbSecretUrl&) = delete;
     ~ZbSecretUrl() { zbSecureWipe(text_); }
     ZbSecretUrl& operator<<(const std::string& part) {
-        text_ += part;
+        append(part);
+        return *this;
+    }
+    // A temporary (urlEncode(apiKey), say) is overwritten once it is added.
+    ZbSecretUrl& operator<<(std::string&& part) {
+        append(part);
+        zbSecureWipe(part);
         return *this;
     }
     ZbSecretUrl& operator<<(const char* part) {
-        text_ += part;
+        append(std::string(part));
         return *this;
     }
     std::string str() const { return text_; }
+    /** The text, moved out (no second copy); this object is left empty. */
+    std::string take() { return std::move(text_); }
 
 private:
+    void append(const std::string& part) {
+        if (text_.size() + part.size() > text_.capacity()) {
+            // Grow into a new buffer and wipe the old one.
+            std::string bigger;
+            bigger.reserve((text_.size() + part.size()) * 2);
+            bigger += text_;
+            zbSecureWipe(text_);
+            text_ = std::move(bigger);
+        }
+        text_ += part;
+    }
+
     std::string text_;
 };
 
@@ -70,7 +93,10 @@ void ZeroBounce::initialize(std::string apiKey) {
     // dropped in favour of an earlier one, and every call then reports it
     // without sending anything.
     zbSecureWipe(this->apiKey);
-    this->apiKey = std::move(apiKey);
+    // Copied, then the parameter is wiped: a key short enough for the small
+    // string buffer would stay in a moved-from parameter.
+    this->apiKey = apiKey;
+    zbSecureWipe(apiKey);
 }
 
 void ZeroBounce::initialize(
@@ -78,7 +104,10 @@ void ZeroBounce::initialize(
     ZBApiURL apiBaseUrl
 ) {
     zbSecureWipe(this->apiKey);
-    this->apiKey = std::move(apiKey);
+    // Copied, then the parameter is wiped: a key short enough for the small
+    // string buffer would stay in a moved-from parameter.
+    this->apiKey = apiKey;
+    zbSecureWipe(apiKey);
     this->apiBaseUrl = baseURLStringFromZBApiURL(apiBaseUrl);
 }
 
@@ -160,8 +189,10 @@ void ZeroBounce::getCredits(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZbSecretUrl url;
+    url << apiBaseUrl << "/getcredits?api_key=" << urlEncode(apiKey);
     sendRequest(
-        apiBaseUrl + "/getcredits?api_key=" + urlEncode(apiKey),
+        url.take(),
         successCallback,
         errorCallback
     );
@@ -264,9 +295,9 @@ void ZeroBounce::validate(
     }
 
     if (options.usePost) {
-        std::string body =
-            "api_key=" + urlEncode(apiKey) +
-            "&email=" + urlEncode(email);
+        ZbSecretUrl form;
+        form << "api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
+        std::string body = form.take();
         ZbWipeGuard wipeBody(body);
         // An empty ip_address= is not the same as leaving it out.
         if (!ipAddress.empty()) {
@@ -312,8 +343,9 @@ void ZeroBounce::validate(
         return;
     }
 
-    std::string url = apiBaseUrl + "/validate?api_key=" + urlEncode(apiKey) +
-        "&email=" + urlEncode(email);
+    ZbSecretUrl urlBuilder;
+    urlBuilder << apiBaseUrl << "/validate?api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
+    std::string url = urlBuilder.take();
     ZbWipeGuard wipeUrl(url);
     if (!ipAddress.empty()) {
         url += "&ip_address=" + urlEncode(ipAddress);
@@ -521,8 +553,10 @@ void ZeroBounce::getActivityData(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZbSecretUrl url;
+    url << apiBaseUrl << "/activity?api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
     sendRequest(
-        apiBaseUrl + "/activity?api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email),
+        url.take(),
         successCallback,
         errorCallback
     );
@@ -535,8 +569,10 @@ void ZeroBounce::scoreEmail(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZbSecretUrl url;
+    url << apiBaseUrl << "/scoring?api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
     sendRequest(
-        apiBaseUrl + "/scoring?api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email),
+        url.take(),
         successCallback,
         errorCallback
     );
@@ -553,8 +589,9 @@ void ZeroBounce::scoreEmailPost(
 
     ZBOutcome<ZBScoreEmailResponse> outcome(apiKey);
     try {
-        std::string body =
-            "api_key=" + urlEncode(apiKey) + "&email=" + urlEncode(email);
+        ZbSecretUrl form;
+        form << "api_key=" << urlEncode(apiKey) << "&email=" << urlEncode(email);
+        std::string body = form.take();
         ZbWipeGuard wipeBody(body);
 
         cpr::Response reqResponse = requestHandler->Post(
@@ -697,9 +734,11 @@ void ZeroBounce::fileStatusInternal(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZbSecretUrl url;
+    url << (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) << "/filestatus?api_key=" << urlEncode(apiKey)
+        << "&file_id=" << urlEncode(fileId);
     sendRequest(
-        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/filestatus?api_key=" + urlEncode(apiKey)
-            + "&file_id=" + urlEncode(fileId),
+        url.take(),
         successCallback,
         errorCallback
     );
@@ -764,9 +803,11 @@ void ZeroBounce::deleteFileInternal(
 ) {
     if (invalidApiKey(errorCallback)) return;
 
+    ZbSecretUrl url;
+    url << (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) << "/deletefile?api_key=" << urlEncode(apiKey)
+        << "&file_id=" << urlEncode(fileId);
     sendRequest(
-        (scoring ? bulkApiScoringBaseUrl : bulkApiBaseUrl) + "/deletefile?api_key=" + urlEncode(apiKey)
-            + "&file_id=" + urlEncode(fileId),
+        url.take(),
         successCallback,
         errorCallback
     );

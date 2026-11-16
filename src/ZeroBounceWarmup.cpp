@@ -75,14 +75,17 @@ void ZeroBounceWarmup::initialize(const std::string& key, const std::string& bas
     initializeError.clear();
     std::string keyCopy = key;  // key may be apiKey itself
     zbSecureWipe(apiKey);
-    apiKey = std::move(keyCopy);
-    if (trimmed(key).empty()) {
+    apiKey = keyCopy;
+    zbSecureWipe(keyCopy);  // not moved: a short key would stay in the small-string buffer
+    std::string trimmedKey = trimmed(key);  // a copy of the key: wiped on return
+    ZbWipeGuard wipeTrimmed(trimmedKey);
+    if (trimmedKey.empty()) {
         initializeError = "api_key is required";
         return;
     }
     // A key with surrounding whitespace or control characters would be quoted,
     // unredacted, in the HTTP library's own error.
-    if (key != trimmed(key) || !zbApiKeyIsClean(key)) {
+    if (key != trimmedKey || !zbApiKeyIsClean(key)) {
         initializeError = "api_key has surrounding whitespace or control characters";
         return;
     }
@@ -169,11 +172,13 @@ bool warmupReady(
     const std::string& initializeError,
     const OnErrorCallback& errorCallback
 ) {
-    if (trimmed(apiKey).empty()) {
+    std::string trimmedKey = trimmed(apiKey);  // a copy of the key: wiped on return
+    ZbWipeGuard wipeTrimmed(trimmedKey);
+    if (trimmedKey.empty()) {
         reportError(errorCallback, "api_key is required");
         return false;
     }
-    if (apiKey != trimmed(apiKey) || !zbApiKeyIsClean(apiKey)) {
+    if (apiKey != trimmedKey || !zbApiKeyIsClean(apiKey)) {
         reportError(errorCallback, "api_key has surrounding whitespace or control characters");
         return false;
     }

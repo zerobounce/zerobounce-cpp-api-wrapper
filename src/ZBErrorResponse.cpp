@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <exception>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -42,12 +44,14 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
     }
 
     std::vector<std::string> errors;
-    std::vector<std::string> otherMessages;
 
     try {
         json hashMap = json::parse(error);
         for (auto& entry : hashMap.items()) {
-            if (entry.key().find("error") != std::string::npos || entry.key().find("message") != std::string::npos) {
+            std::string key = entry.key();
+            std::transform(key.begin(), key.end(), key.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (key.find("error") != std::string::npos || key.find("message") != std::string::npos) {
                 if (entry.value().is_array()) {
                     std::vector<std::string> values = entry.value();
                     errors.insert(errors.end(), values.begin(), values.end());
@@ -55,21 +59,22 @@ ZBErrorResponse ZBErrorResponse::parseError(std::string error) {
                     errors.push_back(entry.value().get<std::string>());
                 }
             } else {
-                if (entry.key() == "success" && zbSuccessFlag(entry.value()) >= 0) {
+                if (key == "success" && zbSuccessFlag(entry.value()) >= 0) {
                     response.success = zbSuccessFlag(entry.value()) == 1;
-                } else if (entry.key() == "success") {
+                } else if (key == "success") {
                     // not a flag and not a result field
                     continue;
-                } else if (entry.value().is_array()) {
-                    std::vector<std::string> values = entry.value();
-                    otherMessages.insert(otherMessages.end(), values.begin(), values.end());
-                } else if (!entry.value().is_null()) {
-                    otherMessages.push_back(entry.value().get<std::string>());
                 }
             }
         }
 
-        errors.insert(errors.end(), otherMessages.begin(), otherMessages.end());
+        // Only a message or error key gives the text. A body without one (an
+        // empty object, an unreadable "success", other fields) has no
+        // message: other fields' values are not an error text.
+        errors.erase(std::remove(errors.begin(), errors.end(), std::string()), errors.end());
+        if (errors.empty()) {
+            errors.push_back("ZeroBounce returned an error with no message text.");
+        }
 
     } catch (const std::exception& e) {
         errors.push_back(error);

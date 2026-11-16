@@ -269,6 +269,10 @@ public:
      * key or the request URL, a transport error or an exception.
      */
     explicit ZBOutcome(std::string apiKey) : apiKey_(std::move(apiKey)) {}
+    ZBOutcome(const ZBOutcome&) = delete;
+    ZBOutcome& operator=(const ZBOutcome&) = delete;
+    /** The key copy is overwritten when the outcome goes out of scope. */
+    ~ZBOutcome() { zbSecureWipe(apiKey_); }
 
     /** An error callback for the SDK's helpers that records the error instead. */
     std::function<void(ZBErrorResponse)> errorSink() {

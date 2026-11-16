@@ -60,7 +60,7 @@ public:
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = 0;
         if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-            ::listen(listenFd_, 16) != 0) {
+            ::listen(listenFd_, SOMAXCONN) != 0) {
             ADD_FAILURE() << "could not listen on 127.0.0.1";
             return;
         }
@@ -103,8 +103,13 @@ private:
         while (!stop_) {
             pollfd pfd{listenFd_, POLLIN, 0};
             if (::poll(&pfd, 1, 20) > 0 && (pfd.revents & POLLIN)) {
-                int fd = ::accept(listenFd_, nullptr, nullptr);
-                if (fd >= 0) {
+                // Every pending connection per poll, not one: the stall tests
+                // open 2N+3 at once and a slow accept loop overflows the backlog.
+                for (;;) {
+                    int fd = ::accept(listenFd_, nullptr, nullptr);
+                    if (fd < 0) {
+                        break;
+                    }
                     if (mode_ == Mode::Redirect) {
                         answerRedirect(fd);
                     } else if (mode_ == Mode::Truncate) {
@@ -598,8 +603,10 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultConnectTimeout) {
     ASSERT_EQ(results.size(), 2 * everyHandlerMethod().size() + 3u);
     for (const auto& result : results) {
         EXPECT_EQ(result.response.status_code, 0) << result.name;
+        // The curl timeout ending the call is what is asserted; the elapsed
+        // bound only tells it from the server closing the connection at kHoldMs.
         EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;
-        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 5000)) << result.name;
+        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 1000)) << result.name;
     }
 }
 
@@ -615,8 +622,10 @@ TEST(Transport, TheBaseHandlersPutAndDeleteHaveTheDefaultTotalTimeout) {
     ASSERT_EQ(results.size(), 2 * everyHandlerMethod().size() + 3u);
     for (const auto& result : results) {
         EXPECT_EQ(result.response.status_code, 0) << result.name;
+        // The curl timeout ending the call is what is asserted; the elapsed
+        // bound only tells it from the server closing the connection at kHoldMs.
         EXPECT_EQ(result.response.error.code, cpr::ErrorCode::OPERATION_TIMEDOUT) << result.name;
-        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 5000)) << result.name;
+        EXPECT_LT(result.elapsed, std::chrono::milliseconds(kHoldMs - 1000)) << result.name;
     }
 }
 
@@ -728,13 +737,33 @@ TEST(TransportHandler, ATimeoutOfZeroOrLessIsRefused) {
 }
 
 TEST(TransportHandler, LibcurlUsesNoSignals) {
-    // cpr sets CURLOPT_NOSIGNAL only when built with CPR_CURL_NOSIGNAL; the
-    // option is passed to the test target as a compile definition.
-#ifdef ZB_EXPECT_CURL_NOSIGNAL
+    // cpr's own sessions: it must have been built with CPR_CURL_NOSIGNAL (a
+    // compile definition of the cpr directory, read in CMake).
+#ifdef ZB_CPR_BUILT_WITH_NOSIGNAL
     SUCCEED();
 #else
     FAIL() << "cpr was built without CPR_CURL_NOSIGNAL";
 #endif
+}
+
+TEST(TransportHandler, EveryRequestSetsNoSignalOnItsOwnHandle) {
+    // The SDK sets CURLOPT_NOSIGNAL itself, so a system cpr cannot drop it.
+    // The option cannot be read back from a handle, so check the one place
+    // the handlers send from: no direct cpr::Get/Post/Put/Delete call is left
+    // in the public header, and the helper they go through sets the option.
+    std::ifstream in(ZB_PUBLIC_HEADER);
+    ASSERT_TRUE(in.good());
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const std::string header = buffer.str();
+    for (const char* verb : {"cpr::Get(", "cpr::Post(", "cpr::Put(", "cpr::Delete("}) {
+        EXPECT_EQ(header.find(verb), std::string::npos) << verb;
+    }
+    const auto helper = header.find("performNoSignal(Method method");
+    ASSERT_NE(helper, std::string::npos);
+    const auto end = header.find("}  // namespace zbdetail", helper);
+    ASSERT_NE(end, std::string::npos);
+    EXPECT_NE(header.substr(helper, end - helper).find("CURLOPT_NOSIGNAL"), std::string::npos);
 }
 
 TEST(TransportDownload, AJsonErrorBodyWithNoMessageIsNotReportedWhole) {

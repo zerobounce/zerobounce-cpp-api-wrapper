@@ -983,6 +983,9 @@ std::string zbMaskSecret(std::string text, const std::string& secret) {
 }
 
 void zbSecureWipe(std::string& secret) {
+    // The whole buffer, not only size(): a string that was longer once, or
+    // grew by += into a new buffer, keeps bytes past the end.
+    secret.resize(secret.capacity());
     volatile char* p = secret.empty() ? nullptr : &secret[0];
     for (size_t i = 0; i < secret.size(); ++i) {
         p[i] = 0;

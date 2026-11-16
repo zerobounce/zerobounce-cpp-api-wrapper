@@ -59,6 +59,8 @@ cmake --build build
 
 Be aware that the library may require some .dll files (found in the `build` directory) in order to work properly in your project.
 
+To run the offline tests under AddressSanitizer and UndefinedBehaviorSanitizer, configure a second build directory with `-DZB_SANITIZE=ON` (the flags apply to the SDK and test targets only, not to the fetched dependencies).
+
 ## USAGE
 Include the library in your file. The examples below also print with `std::cout`, from `<iostream>`:
 ```cpp
@@ -534,6 +536,7 @@ The Warmup API is a separate product. It has its own host, its own team-scoped k
 
 ```cpp
 #include <ZeroBounce/ZeroBounceWarmup.h>
+#include <iostream>
 
 ZeroBounceWarmup warmup;
 warmup.initialize("<YOUR_WARMUP_API_KEY>");

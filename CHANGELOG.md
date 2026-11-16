@@ -3,16 +3,17 @@
 ### Upgrading
 
 This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of source may need a look:
-1. **Rebuild.** The shared library's `SOVERSION` is the major version, so it is `4` and the file is `libZeroBounce.so.4` (`libZeroBounce.4.dylib`). A binary linked against 3.0.x names the old soname and will not load this library. Rebuild every program that links it; a project that takes the SDK through `FetchContent` or `add_subdirectory` rebuilds with it.
+1. **Rebuild.** From 4.0.0 the shared library carries a `SOVERSION` equal to the major version, so it is `4` and the file is `libZeroBounce.so.4` (`libZeroBounce.4.dylib`), and a program built against it refuses to load a library of another major version. 3.0.1 and 3.0.0 had no `VERSION` or `SOVERSION`, so a 3.0.x binary names the unversioned `libZeroBounce.so` (`@rpath/libZeroBounce.dylib`), and 4.0.0 still ships that name as a link to the new library: nothing stops a 3.0.x binary from loading 4.0.0, and it can then fail at run time on the changed ABI. Rebuild every program that links it; a project that takes the SDK through `FetchContent` or `add_subdirectory` rebuilds with it.
 2. **`WarmupEmailContent` and `WarmupManagedSending` grew fields at the end** (`companyWebsite`, `companyDescription`, `exampleEmail`; `weekdaysOnly`, `timezone`, `timezoneOffsetHours`). Source written against 3.0.1 keeps compiling and positional initialisers keep their meaning, but the size of both structs changed, so code that embeds one must be rebuilt (see 1). `SendFileOptions` did not change.
-3. **`getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError`** when a present field has the wrong JSON type; it used to return the default. Only code that calls `getOrDefault` itself is affected: the SDK catches the exception and reports an error with the HTTP status.
-4. **The include guard of `utils.h` is `ZEROBOUNCE_UTILS_H`** (it was `UTILS_H`). Code that tested `UTILS_H` to detect the header must test the new name.
-5. **Some HTTP 2xx answers that reached the success callback are now errors** (see Fixed): a body that is only a message, `{}`, JSON of the wrong shape, a field of the wrong type, a body with a byte order mark or NUL, a `text/html` answer, a blank body, and a response cut short. An empty 2xx from `deleteInboxPlacementTest` is the one case that went the other way: it is now a success (`"{}"`). Check the error callback of every call whose success path you rely on.
+3. **New destructors.** `~ZeroBounce()` is now user-declared and `ZeroBounceWarmup`'s virtual destructor is defined out of line (both wipe the API key), which changes the ABI (see 1). **`RequestHandler(timeoutMs, connectTimeoutMs)` throws `std::invalid_argument`** for a value of 0 or less; it used to accept it.
+4. **`getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError`** when a present field has the wrong JSON type; it used to return the default. Only code that calls `getOrDefault` itself is affected: the SDK catches the exception and reports an error with the HTTP status.
+5. **The include guard of `utils.h` is `ZEROBOUNCE_UTILS_H`** (it was `UTILS_H`). Code that tested `UTILS_H` to detect the header must test the new name.
+6. **Some HTTP 2xx answers that reached the success callback are now errors** (see Fixed): a body that is only a message, `{}`, JSON of the wrong shape, a field of the wrong type, a body with a byte order mark or NUL, a `text/html` answer, a blank body, and a response cut short. An empty 2xx from `deleteInboxPlacementTest` is the one case that went the other way: it is now a success (`"{}"`). Check the error callback of every call whose success path you rely on.
 
 ### Breaking
 
 - **Behaviour change:** `getOrDefault` (in `utils.h`) throws `ZBJsonFieldTypeError` when a present field has the wrong JSON type. It used to return the default. `null` and a missing field still return the default.
-- `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs must be rebuilt. The shared library's `SOVERSION` is the major version (`4` for this release, `3` in 3.0.1), so that rebuild links a different soname and an old binary will not load the new library. `SendFileOptions` is unchanged from 3.0.1.
+- `WarmupEmailContent` and `WarmupManagedSending` grew fields at the end. Source written against 3.0.1 keeps compiling. A program that embeds one of those structs must be rebuilt. 3.0.1 had no `SOVERSION`; from 4.0.0 the shared library's `SOVERSION` is the major version (`4`, file `libZeroBounce.so.4`), so later major changes are refused by the loader. A 3.0.x binary names the unversioned `libZeroBounce.so`, which still links to the new library, so it can load 4.0.0 and fail at run time: rebuild it. `SendFileOptions` is unchanged from 3.0.1.
 - The include guard of `utils.h` is renamed from `UTILS_H` to `ZEROBOUNCE_UTILS_H`.
 - An HTTP 2xx answer that 3.0.1 handed to the success callback is now an error in the cases listed under Fixed (messages-only bodies, wrong JSON shape or field types, a leading byte order mark, `text/html`, blank bodies, truncated bodies).
 
@@ -24,6 +25,9 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 - `RequestHandler::timeoutMs()` and `RequestHandler::connectTimeoutMs()` report the timeouts a handler applies (120000 and 30000 by default).
 - `-DZB_SANITIZE=ON` CMake option: ASan and UBSan on the SDK and test targets only.
 - Wiping extended to every request that carries the key: the request URLs of `getCredits`, `getApiUsage`, `activity`, `scoreEmail`, `filestatus`, `deletefile` and the Email Finder / Domain Search calls (wiped in `sendRequest`, and the URL builders are wiped on destruction), the form bodies of `validate` (POST) and `scoreEmail`, the `api_key` part of the `sendFile` multipart, and the `API-Key` headers of every Warmup call. Not wiped: the `cpr::Parameters` of `getFile` (cpr offers no access to its copy of the key).
+- `utils.h` gains `zbSuccessFlag`, `zbSuccessOf`, `zbJsonHasTypeOf`, `zbIsStringVector`, `zbRequireString` and `zbFileJobMessage`, the helpers behind the response-shape checks.
+- `RequestHandler(timeoutMs, connectTimeoutMs)` throws `std::invalid_argument` (`timeoutMs must be greater than 0`, `connectTimeoutMs must be greater than 0`) for a value of 0 or less.
+- `~ZeroBounce()` and an out-of-line `virtual ~ZeroBounceWarmup()` (see Fixed, key wiping).
 
 ### Changed
 
@@ -71,6 +75,8 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 - **Behaviour change:** a base URL with a query (`?x=1`, a bare `?`), a fragment, a backslash, whitespace, a control or an invisible character (such as U+200B) was sent on. Every request path (bulk, bulk root, list evaluator, Inbox Placement, Warmup) now reports "request URL must not contain a query, a fragment, a backslash, whitespace or control characters" and sends nothing; the SDK's own escaped query still passes. `ZeroBounceWarmup::initialize` refuses such a base with the same text in `getInitializeError()`. Before, `?x=1` or a bare `?` was accepted. A base like `https://host/v2?email=a@b.c` is now refused.
 - **Behaviour change:** `RequestHandler(timeoutMs, connectTimeoutMs)` throws `std::invalid_argument` for 0 or a negative value (0 meant no timeout in libcurl).
 - A JSON error body of more than 1000 bytes with no message/error field is reported as "ZeroBounce returned an error with no message text." instead of the whole body.
+- **Behaviour change:** an error body with no `message`/`error` key that has text no longer yields an empty or misleading error list. A 200 answer of `{}`, `{ }`, `{"success":"maybe"}` used to reach the error callback with an empty `errors` list on the typed calls, and a body such as `{"success":"0 ","file_id":"x"}` reported the value of another field ("x") as the error text. Now `errors` holds the single text "ZeroBounce returned an error with no message text.". Other fields' values are never an error text; message/error key names are matched without regard to case.
+- libcurl's CURLOPT_NOSIGNAL is now set by the SDK on every request's own handle (`RequestHandler` and the `BaseRequestHandler` PUT/DELETE defaults send through a `cpr::Session`), so a cpr built without CPR_CURL_NOSIGNAL (a system copy) cannot bring signal-based timeouts back. The build also checks that the fetched cpr carries CPR_CURL_NOSIGNAL.
 
 ### Security
 
@@ -89,8 +95,9 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 - **Behaviour change:** `api_key` validation also refuses U+034F, U+115F, U+1160, U+3164, U+FFA0, U+2800, U+FE00-FE0F, U+180B-180F, U+17B4/17B5 and U+E0000-E0FFF (same list as the C SDK); such a key is reported as "api_key has surrounding whitespace or control characters".
 - The API key (`ZeroBounce`, `ZeroBounceWarmup`) and the SMTP username/password in the Warmup request body are overwritten (volatile stores, then cleared) when replaced, on destruction, and for the temporary request strings of `validate`, `validateBatch` and `testSmtpConfiguration`. `ZeroBounce` and `ZeroBounceWarmup` gain a user-declared destructor (ABI change, part of 4.0.0).
 - libcurl is built with `CPR_CURL_NOSIGNAL` ON (CURLOPT_NOSIGNAL), so a timeout never raises a signal in a multi-threaded program.
+- Fewer copies of the API key stay in memory: `zbSecureWipe` now overwrites the whole buffer capacity, not only size(); request URLs and forms are built in a reserved buffer (`ZbSecretUrl`) that never reallocates and wipes its encoded-key temporaries; `ZBOutcome` wipes its key copy; `initialize` and `ZeroBounceWarmup` no longer leave the key in a moved-from or trimmed temporary. Copies made inside cpr/libcurl (the `cpr::Url` copy, the session's own URL) are out of the SDK's reach.
 
-## [3.0.1] - 2026-11-12
+## [3.0.1] - 2026-11-11
 
 ### Changed
 
@@ -103,7 +110,7 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 - A download answered with a JSON object instead of a file was saved as the file when its keys were `Message` or `Error` (as an invalid key answers) or other keys, unless the content type was `application/json`; `emailFinderGetFile` and `domainSearchGetFile` saved it even with that content type. Every download now reports any JSON object body, whatever its keys or content type, to the error callback with the HTTP status, and writes nothing, as the Pascal and iOS SDKs do. `ZeroBounce::getFileJsonIndicatesError` and `formatGetFileErrorMessage` also recognise the `Message` and `Error` keys.
 - When a downloaded file could be written only in part (a full disk, a file size limit), the error was reported but the truncated file was left behind. It is now removed.
 
-## [3.0.0] - 2026-11-12
+## [3.0.0] - 2026-11-11
 
 ### Breaking
 
@@ -202,7 +209,7 @@ This release is **4.0.0**. A 3.0.x program needs a rebuild, and a few lines of s
 
 - No library changes: the release sets the version to 2.1.4 and moves the CI workflows to `actions/checkout` v7 and `github/codeql-action` 4.36.3.
 
-## [2.1.3] - 2026-06-18
+## [2.1.3] - 2026-06-17
 
 ### Fixed
 
